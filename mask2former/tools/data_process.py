@@ -1,3 +1,10 @@
+"""
+Date: 2024/11/29
+Author: Renjie Zhou
+Email: nikibandit200814@gmail.com
+"""
+import json
+
 from PIL import Image
 import shutil
 import numpy as np
@@ -396,6 +403,15 @@ def ready2training(image_dir='', mask_dir='', sematic_dir='', instance_dir='', d
 
     return dataset
 
+
+def get_label2id(json_path):
+    assert os.path.isfile(json_path) and os.path.splitext(json_path)[1] == '.json', f"{json_path}不是一个json配置文件"
+    with open(json_path, 'r') as f:
+        label2id = json.load(f)
+    if not isinstance(label2id, dict):
+        raise ValueError(f"JSON 文件 {json_path} 的内容不是有效的字典格式")
+
+    return label2id
 
 def main():
     image_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/shrimp_test/JPEGImages"
