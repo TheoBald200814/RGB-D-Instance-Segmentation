@@ -1,14 +1,14 @@
 from PIL import Image
 import shutil
 import numpy as np
-import os
 import cv2
 import os
 import random
 import string
-import PIL.Image
 import PIL.ImageOps
 from tqdm import tqdm
+from datasets import Dataset, DatasetDict, Image as datasets_Image
+
 
 def get_unique_colors(image_path):
     """
@@ -82,6 +82,13 @@ def combine_sematic_instance_mask(sematic_mask_path, instance_mask_path):
     instance_mask = convert_mask2grayscale(instance_mask_path)
     _ = np.zeros((sematic_mask.shape[0], sematic_mask.shape[1]))
     assert sematic_mask.shape == instance_mask.shape == _.shape, "the shape of sematic mask and instance mask and _ must be equal"
+    # =============================================重要说明===========================================================
+    # mask2former要求的annotation格式为3通道的图片: (h, w, 3)
+    # 其中，第一层为sematic mask；第二层为instance mask；第三层会在annotation加载时舍丢弃
+    # annotation在加载时使用PIL.Image读取，然后使用np.array(image)进行转化。因此，图像数据是按照RGB格式进行解析
+    # 该函数(combine_sematic_instance_mask)使用的是opencv对图像数据进行解析，因此默认使用BGR格式
+    # 为了对齐模型所采用的RGB加载格式，且优化图像格式之间的转化，因此，此处mask的拼接顺序有所不同（_, instance_mask, sematic_mask）
+    #================================================================================================================
     mask = np.dstack((_, instance_mask, sematic_mask))
     assert mask.shape == (sematic_mask.shape[0], sematic_mask.shape[1], 3)
 
@@ -128,7 +135,33 @@ def image_sort(path: str):
     os.rmdir(image_cache_path)
 
 
-def label_check(images_path: str, labels_path: str):
+def label_check(image_dir, mask_dir, image_name_list):
+    """
+    标签检查
+    :param image_dir: image_dir
+    :param mask_dir: mask_dir
+    :param image_name_list: image_name_list
+    """
+    for image_name in image_name_list:
+        image_path = os.path.join(image_dir, image_name)
+        mask_path = os.path.join(mask_dir, os.path.splitext(image_name)[0] + '.png')
+        image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+        mask = cv2.imread(mask_path, cv2.IMREAD_COLOR)
+        # 基于opencv打开并处理图像数据，因此sematic mask在第三层；instance mask在第二层
+        sematic_mask = mask[..., 2]
+        instance_mask = mask[..., 1]
+        sematic_mask = np.where(sematic_mask == 0, 255, sematic_mask)
+        instance_mask = np.where(instance_mask == 0, 255, instance_mask)
+        sematic_mask = np.dstack((sematic_mask, sematic_mask, sematic_mask))
+        instance_mask = np.dstack((instance_mask, instance_mask, instance_mask))
+        assert image.shape == sematic_mask.shape == instance_mask.shape
+        row = cv2.hconcat([image, sematic_mask, instance_mask])
+        cv2.imshow("image & sematic & instance", row)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
+
+def old_label_check(images_path: str, labels_path: str):
     """
     标签检查
     :param images_path: images path
@@ -271,68 +304,105 @@ def extract_frames(video_path, output_folder, frame_interval):
     :param output_folder: 输出文件夹
     :param frame_interval: 抽帧间隔
     """
-    # 确保输出文件夹存在
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
-
-    # 读取视频
     cap = cv2.VideoCapture(video_path)
-
     frame_count = 0
     save_count = 0
     while True:
-        # 读取下一帧
         ret, frame = cap.read()
-
-        # 如果正确读取到了帧，则ret为True
         if not ret:
             break
 
-        # 检查是否达到保存帧的条件
         if frame_count % frame_interval == 0:
-            # 构造输出文件名
             filename = os.path.join(output_folder, rename_with_random_string() + ".jpg")
-
-            # 保存当前帧为图片
             cv2.imwrite(filename, frame)
-
             print(f"Saved {filename}")
             save_count += 1
-
         frame_count += 1
 
-    # 释放视频捕获对象
     cap.release()
 
 
-# if __name__ == "__main__":
-    # directory_to_process = "/Users/theobald/Documents/code_lib/python_lib/huggingface_data_process/datasets/local/24_11_19/val"
-    # if os.path.isdir(directory_to_process):
-    #     image_name_list = get_image_name_list(directory_to_process)
-    #     for image_name in tqdm(image_name_list):
-    #         image_path = os.path.join(directory_to_process, image_name)
-    #         img = load_image_file(image_path)
-    #         img.save(image_path)
-    # else:
-    #     print("提供的路径不是一个有效的目录")
+def create_dataset(image_paths, label_paths):
+    """
+    create dataset
+    :param image_paths: the list of image path
+    :param label_paths: the list of label path
+    :return: dataset
+    """
+    dataset = Dataset.from_dict({"image": sorted(image_paths),
+                                 "annotation": sorted(label_paths),
+                                 "semantic_class_to_id": [{"shrimp": 0}] * len(image_paths)
+                                 })
+    dataset = dataset.cast_column("image", datasets_Image())
+    dataset = dataset.cast_column("annotation", datasets_Image())
+
+    return dataset
+
+
+def local_dataset_constructor(image_dir: str, label_dir: str):
+    """
+    本地数据集构造器
+    :param image_dir: iamge_dir
+    :param label_dir: label_dir
+    :return: dataset
+    """
+    image_name_list = get_image_name_list(image_dir)
+    label_name_list = get_image_name_list(label_dir)
+    image_paths = [os.path.join(image_dir, x) for x in image_name_list]
+    label_paths = [os.path.join(label_dir, x) for x in label_name_list]
+    dataset = create_dataset(image_paths, label_paths)
+    dataset = DatasetDict({
+        "train": dataset,
+        "validation": dataset
+    })
+
+    return dataset
+
+
+def ready2training(image_dir='', mask_dir='', sematic_dir='', instance_dir='', do_mask=True, check=False):
+    """
+    准备训练数据，构造dataset
+    :param check: 是否需要标签可视化检查
+    :param image_dir: image_dir
+    :param do_mask: 是否需要构造mask
+    :param mask_dir: mask_dir
+    :param sematic_dir: sematic_dir
+    :param instance_dir: instance_dir
+    :return: dataset
+    """
+    assert os.path.isdir(image_dir), f"{image_dir} 不存在"
+    assert os.path.isdir(mask_dir), f"{mask_dir} 不存在"
+    assert (not do_mask or (os.path.isdir(sematic_dir) and os.path.isdir(instance_dir))), "数据缺失，无法准备训练数据"
+    image_name_list = get_image_name_list(image_dir)
+    if do_mask:
+        assert len(os.listdir(mask_dir)) == 0, f"{mask_dir} 不为空，妨碍mask存储"
+        sematic_name_list = get_image_name_list(sematic_dir)
+        instance_name_list = get_image_name_list(instance_dir)
+        assert sematic_name_list == instance_name_list, "sematic mask 和 instance mask不匹配"
+        for mask_name in tqdm(sematic_name_list):
+            sematic_path = os.path.join(sematic_dir, mask_name)
+            instance_path = os.path.join(instance_dir, mask_name)
+            mask = combine_sematic_instance_mask(sematic_path, instance_path)
+            save_path = os.path.join(mask_dir, mask_name)
+            cv2.imwrite(save_path, mask)
+
+    mask_name_list = get_image_name_list(mask_dir)
+    assert all(os.path.splitext(image_name)[0] == os.path.splitext(mask_name)[0] for image_name, mask_name in zip(image_name_list, mask_name_list)), "image 和 mask 不匹配"
+    if check:
+        label_check(image_dir, mask_dir, image_name_list)
+    dataset = local_dataset_constructor(image_dir, mask_dir)
+
+    return dataset
+
 
 def main():
-    sematic_mask_dir = "/Users/theobald/Documents/code_lib/python_lib/huggingface_data_process/datasets/local/job_1_dataset_2024_11_21_07_32_42_segmentation mask 1.1/SegmentationClass"
-    instance_mask_dir = "/Users/theobald/Documents/code_lib/python_lib/huggingface_data_process/datasets/local/job_1_dataset_2024_11_21_07_32_42_segmentation mask 1.1/SegmentationObject"
-    mask_save_dir = "/Users/theobald/Documents/code_lib/python_lib/huggingface_data_process/datasets/local/job_1_dataset_2024_11_21_07_32_42_segmentation mask 1.1/mask"
-
-    sematic_mask_image_name_list = get_image_name_list(sematic_mask_dir)
-    instance_mask_image_name_list = get_image_name_list(instance_mask_dir)
-
-    assert len(sematic_mask_image_name_list) == len(instance_mask_image_name_list)
-    for i in tqdm(range(len(sematic_mask_image_name_list))):
-        assert sematic_mask_image_name_list[i] == instance_mask_image_name_list[i]
-        sematic_mask_path = os.path.join(sematic_mask_dir, sematic_mask_image_name_list[i])
-        instance_mask_path = os.path.join(instance_mask_dir, instance_mask_image_name_list[i])
-        mask = combine_sematic_instance_mask(sematic_mask_path, instance_mask_path)
-        save_path = os.path.join(mask_save_dir, sematic_mask_image_name_list[i])
-
-        cv2.imwrite(save_path, mask)
+    image_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/shrimp_test/JPEGImages"
+    mask_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/shrimp_test/mask"
+    sematic_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/shrimp_test/SegmentationClass"
+    instance_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/shrimp_test/SegmentationObject"
+    ready2training(image_dir, mask_dir, sematic_dir, instance_dir,do_mask=False, check=True)
 
 
 if __name__ == '__main__':
