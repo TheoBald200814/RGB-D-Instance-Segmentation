@@ -15,6 +15,8 @@ import string
 import PIL.ImageOps
 from tqdm import tqdm
 from datasets import Dataset, DatasetDict, Image as datasets_Image
+import os
+import json
 
 
 def get_unique_colors(image_path):
@@ -413,12 +415,65 @@ def get_label2id(json_path):
 
     return label2id
 
+
+def generate_json_files(train_image_dir, train_annotation_dir, val_image_dir, val_annotation_dir, output_dir):
+    """
+    生成用于 datasets 加载的 JSON 文件，包含图像路径、注释路径和类别映射。
+
+    :param train_image_dir: 训练集图像文件夹路径
+    :param train_annotation_dir: 训练集注释文件夹路径
+    :param val_image_dir: 验证集图像文件夹路径
+    :param val_annotation_dir: 验证集注释文件夹路径
+    :param output_dir: 输出 JSON 文件保存目录
+    """
+    # 定义固定的 semantic_class_to_id
+    semantic_class_to_id = {"background": 0, "shrimp": 1}
+
+    # Helper function to generate JSON data for a dataset
+    def generate_data(image_dir, annotation_dir):
+        data = []
+        image_files = sorted(os.listdir(image_dir))
+        annotation_files = sorted(os.listdir(annotation_dir))
+
+        # Ensure matching image and annotation files
+        for image_file, annotation_file in zip(image_files, annotation_files):
+            image_path = os.path.join(image_dir, image_file)
+            annotation_path = os.path.join(annotation_dir, annotation_file)
+
+            if os.path.isfile(image_path) and os.path.isfile(annotation_path):
+                data.append({
+                    "image": image_path,
+                    "annotation": annotation_path,
+                    "semantic_class_to_id": semantic_class_to_id
+                })
+        return data
+
+    # Generate data for train and validation
+    train_data = generate_data(train_image_dir, train_annotation_dir)
+    val_data = generate_data(val_image_dir, val_annotation_dir)
+
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Write JSON files
+    train_json_path = os.path.join(output_dir, "train.json")
+    val_json_path = os.path.join(output_dir, "validation.json")
+
+    with open(train_json_path, "w") as train_file:
+        json.dump(train_data, train_file, indent=4)
+
+    with open(val_json_path, "w") as val_file:
+        json.dump(val_data, val_file, indent=4)
+
+    print(f"JSON files generated:\n  Train: {train_json_path}\n  Validation: {val_json_path}")
+
+
 def main():
-    image_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/shrimp_test/JPEGImages"
-    mask_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/shrimp_test/mask"
-    sematic_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/shrimp_test/SegmentationClass"
-    instance_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/shrimp_test/SegmentationObject"
-    ready2training(image_dir, mask_dir, sematic_dir, instance_dir,do_mask=False, check=True)
+    root_path = ""
+    image_dir = os.path.join(root_path, "shrimpDetection/dataset/local/shrimp_test/JPEGImages")
+    mask_dir = os.path.join(root_path, "shrimpDetection/dataset/local/shrimp_test/mas")
+    output_path = os.path.join(root_path, "shrimpDetection/dataset/local")
+    generate_json_files(image_dir, mask_dir, image_dir, mask_dir, output_path)
 
 
 if __name__ == '__main__':
