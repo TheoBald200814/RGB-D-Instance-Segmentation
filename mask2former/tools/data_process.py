@@ -9,7 +9,6 @@ from PIL import Image
 import shutil
 import numpy as np
 import cv2
-import os
 import random
 import string
 import PIL.ImageOps
@@ -144,62 +143,37 @@ def image_sort(path: str):
     os.rmdir(image_cache_path)
 
 
-def label_check(image_dir, mask_dir, image_name_list):
+def label_check(image_path_list, mask_path_list):
     """
     标签检查
-    :param image_dir: image_dir
-    :param mask_dir: mask_dir
-    :param image_name_list: image_name_list
+    :param image_path_list: image_path_list
+    :param mask_path_list: mask_path_list
     """
-    for image_name in image_name_list:
-        image_path = os.path.join(image_dir, image_name)
-        mask_path = os.path.join(mask_dir, os.path.splitext(image_name)[0] + '.png')
+    for image_path, mask_path in zip(image_path_list, mask_path_list):
         image = cv2.imread(image_path, cv2.IMREAD_COLOR)
         mask = cv2.imread(mask_path, cv2.IMREAD_COLOR)
         # 基于opencv打开并处理图像数据，因此sematic mask在第三层；instance mask在第二层
-        sematic_mask = mask[..., 2]
+        semantic_mask = mask[..., 2]
         instance_mask = mask[..., 1]
-        sematic_mask = np.where(sematic_mask == 0, 255, sematic_mask)
-        instance_mask = np.where(instance_mask == 0, 255, instance_mask)
-        sematic_mask = np.dstack((sematic_mask, sematic_mask, sematic_mask))
-        instance_mask = np.dstack((instance_mask, instance_mask, instance_mask))
-        assert image.shape == sematic_mask.shape == instance_mask.shape
-        row = cv2.hconcat([image, sematic_mask, instance_mask])
-        cv2.imshow("image & sematic & instance", row)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-
-
-def old_label_check(images_path: str, labels_path: str):
-    """
-    标签检查
-    :param images_path: images path
-    :param labels_path: labels path
-    """
-    image_name_list = get_image_name_list(images_path)
-    label_name_list = get_image_name_list(labels_path)
-    assert len(image_name_list) == len(label_name_list), "图片与标签图片规模不一致"
-    for i in range(len(image_name_list)):
-        image_path = os.path.join(images_path, image_name_list[i])
-        label_path = os.path.join(labels_path, label_name_list[i])
-        image = cv2.imread(image_path, cv2.IMREAD_COLOR)
-        mask = cv2.imread(label_path, cv2.IMREAD_GRAYSCALE)
-        assert image.shape[:2] == mask.shape, "图片与标签图片尺寸不一致"
-
-        # 创建一个黄色的掩码
         yellow_mask = np.zeros_like(image, dtype=np.uint8)
-        yellow_mask[mask != 255] = (0, 255, 255)  # 黄色
-
-        # 将黄色掩码设置为半透明
+        yellow_mask[semantic_mask != 0] = (0, 255, 255)  # 黄色
+        blue_mask = np.zeros_like(image, dtype=np.uint8)
+        blue_mask[instance_mask !=0] = (0, 0, 255)
         alpha = 0.5  # 透明度
         yellow_mask = cv2.addWeighted(yellow_mask, alpha, np.zeros_like(yellow_mask), 1 - alpha, 0)
+        blue_mask = cv2.addWeighted(blue_mask, alpha, np.zeros_like(blue_mask), 1 - alpha, 0)
+        image = cv2.addWeighted(image, 1, yellow_mask, 1, 0)
+        image = cv2.addWeighted(image, 1, blue_mask, 1, 0)
 
-        # 将黄色掩码叠加到原始图片上
-        composite_image = cv2.addWeighted(image, 1, yellow_mask, 1, 0)
+        semantic_mask = np.where(semantic_mask == 0, 255, semantic_mask)
+        instance_mask = np.where(instance_mask == 0, 255, instance_mask)
+        semantic_mask = np.dstack((semantic_mask, semantic_mask, semantic_mask))
+        instance_mask = np.dstack((instance_mask, instance_mask, instance_mask))
 
-        # 显示图像
-        cv2.imshow('Composite Image', composite_image)
-        cv2.waitKey(0)  # 等待按键事件
+        assert image.shape == semantic_mask.shape == instance_mask.shape
+        row = cv2.hconcat([image, semantic_mask, instance_mask])
+        cv2.imshow("image & sematic & instance", row)
+        cv2.waitKey(0)
         cv2.destroyAllWindows()
 
 
@@ -333,80 +307,12 @@ def extract_frames(video_path, output_folder, frame_interval):
     cap.release()
 
 
-def create_dataset(image_paths, label_paths):
-    """
-    create dataset
-    :param image_paths: the list of image path
-    :param label_paths: the list of label path
-    :return: dataset
-    """
-    dataset = Dataset.from_dict({"image": sorted(image_paths),
-                                 "annotation": sorted(label_paths),
-                                 "semantic_class_to_id": [{"shrimp": 0}] * len(image_paths)
-                                 })
-    dataset = dataset.cast_column("image", datasets_Image())
-    dataset = dataset.cast_column("annotation", datasets_Image())
-
-    return dataset
-
-
-def local_dataset_constructor(image_dir: str, label_dir: str):
-    """
-    本地数据集构造器
-    :param image_dir: iamge_dir
-    :param label_dir: label_dir
-    :return: dataset
-    """
-    image_name_list = get_image_name_list(image_dir)
-    label_name_list = get_image_name_list(label_dir)
-    image_paths = [os.path.join(image_dir, x) for x in image_name_list]
-    label_paths = [os.path.join(label_dir, x) for x in label_name_list]
-    dataset = create_dataset(image_paths, label_paths)
-    dataset = DatasetDict({
-        "train": dataset,
-        "validation": dataset
-    })
-
-    return dataset
-
-
-def ready2training(image_dir='', mask_dir='', sematic_dir='', instance_dir='', do_mask=True, check=False):
-    """
-    准备训练数据，构造dataset
-    :param check: 是否需要标签可视化检查
-    :param image_dir: image_dir
-    :param do_mask: 是否需要构造mask
-    :param mask_dir: mask_dir
-    :param sematic_dir: sematic_dir
-    :param instance_dir: instance_dir
-    :return: dataset
-    """
-    assert os.path.isdir(image_dir), f"{image_dir} 不存在"
-    assert os.path.isdir(mask_dir), f"{mask_dir} 不存在"
-    assert (not do_mask or (os.path.isdir(sematic_dir) and os.path.isdir(instance_dir))), "数据缺失，无法准备训练数据"
-    image_name_list = get_image_name_list(image_dir)
-    if do_mask:
-        assert len(os.listdir(mask_dir)) == 0, f"{mask_dir} 不为空，妨碍mask存储"
-        sematic_name_list = get_image_name_list(sematic_dir)
-        instance_name_list = get_image_name_list(instance_dir)
-        assert sematic_name_list == instance_name_list, "sematic mask 和 instance mask不匹配"
-        for mask_name in tqdm(sematic_name_list):
-            sematic_path = os.path.join(sematic_dir, mask_name)
-            instance_path = os.path.join(instance_dir, mask_name)
-            mask = combine_sematic_instance_mask(sematic_path, instance_path)
-            save_path = os.path.join(mask_dir, mask_name)
-            cv2.imwrite(save_path, mask)
-
-    mask_name_list = get_image_name_list(mask_dir)
-    assert all(os.path.splitext(image_name)[0] == os.path.splitext(mask_name)[0] for image_name, mask_name in zip(image_name_list, mask_name_list)), "image 和 mask 不匹配"
-    if check:
-        label_check(image_dir, mask_dir, image_name_list)
-    dataset = local_dataset_constructor(image_dir, mask_dir)
-
-    return dataset
-
-
 def get_label2id(json_path):
+    """
+    加载label2id文件
+    :json_path: json_path
+    :return: label2id
+    """
     assert os.path.isfile(json_path) and os.path.splitext(json_path)[1] == '.json', f"{json_path}不是一个json配置文件"
     with open(json_path, 'r') as f:
         label2id = json.load(f)
@@ -416,64 +322,111 @@ def get_label2id(json_path):
     return label2id
 
 
-def generate_json_files(train_image_dir, train_annotation_dir, val_image_dir, val_annotation_dir, output_dir):
+def split2train_and_valid(image_path_list, mask_path_list, valid_rate=0.3):
     """
-    生成用于 datasets 加载的 JSON 文件，包含图像路径、注释路径和类别映射。
-
-    :param train_image_dir: 训练集图像文件夹路径
-    :param train_annotation_dir: 训练集注释文件夹路径
-    :param val_image_dir: 验证集图像文件夹路径
-    :param val_annotation_dir: 验证集注释文件夹路径
-    :param output_dir: 输出 JSON 文件保存目录
+    按照比例将数据集划分为训练集和验证集
+    :param image_path_list: image_path_list
+    :param mask_path_list: mask_path_list
+    :valid_rate: 0.3
+    :return: train_image_path_list, train_mask_path_list, valid_image_path_list, valid_mask_path_list
     """
-    # 定义固定的 semantic_class_to_id
-    semantic_class_to_id = {"background": 0, "shrimp": 1}
+    size = len(image_path_list)
+    train_size = int(size * (1 - valid_rate))
+    train_image_path_list = image_path_list[:train_size]
+    train_mask_path_list = mask_path_list[:train_size]
+    valid_image_path_list = image_path_list[train_size:]
+    valid_mask_path_list = mask_path_list[train_size:]
 
-    # Helper function to generate JSON data for a dataset
-    def generate_data(image_dir, annotation_dir):
+    return train_image_path_list, train_mask_path_list, valid_image_path_list, valid_mask_path_list
+
+
+def generate_meta_file(train_image_path_list, train_mask_path_list,
+                       valid_image_path_list, valid_mask_path_list,
+                       output_dir,
+                       semantic_class_to_id=None):
+    """
+    生成dataset的元数据文件（json格式，train和valid分开存放）
+    :param train_image_path_list: train_image_path_list
+    :param train_mask_path_list: train_mask_path_list
+    :param valid_image_path_list: valid_image_path_list
+    :param valid_mask_path_list: valid_mask_path_list
+    :param output_dir: the output dir of meta file
+    :semantic_class_to_id: {"background": 0, "shrimp": 1}
+    """
+    if semantic_class_to_id is None:
+        semantic_class_to_id = {"background": 0, "shrimp": 1}
+
+    def meta_data_unit(image_path_list, mask_path_list):
         data = []
-        image_files = sorted(os.listdir(image_dir))
-        annotation_files = sorted(os.listdir(annotation_dir))
+        for i in range(len(image_path_list)):
+            data.append({
+                "image": image_path_list[i],
+                "annotation": mask_path_list[i],
+                "semantic_class_to_id": semantic_class_to_id
+            })
 
-        # Ensure matching image and annotation files
-        for image_file, annotation_file in zip(image_files, annotation_files):
-            image_path = os.path.join(image_dir, image_file)
-            annotation_path = os.path.join(annotation_dir, annotation_file)
-
-            if os.path.isfile(image_path) and os.path.isfile(annotation_path):
-                data.append({
-                    "image": image_path,
-                    "annotation": annotation_path,
-                    "semantic_class_to_id": semantic_class_to_id
-                })
         return data
 
-    # Generate data for train and validation
-    train_data = generate_data(train_image_dir, train_annotation_dir)
-    val_data = generate_data(val_image_dir, val_annotation_dir)
-
-    # Ensure output directory exists
-    os.makedirs(output_dir, exist_ok=True)
+    train_data = meta_data_unit(train_image_path_list, train_mask_path_list)
+    valid_data = meta_data_unit(valid_image_path_list, valid_mask_path_list)
 
     # Write JSON files
     train_json_path = os.path.join(output_dir, "train.json")
-    val_json_path = os.path.join(output_dir, "validation.json")
+    valid_json_path = os.path.join(output_dir, "valid.json")
 
     with open(train_json_path, "w") as train_file:
         json.dump(train_data, train_file, indent=4)
 
-    with open(val_json_path, "w") as val_file:
-        json.dump(val_data, val_file, indent=4)
+    with open(valid_json_path, "w") as valid_file:
+        json.dump(valid_data, valid_file, indent=4)
 
-    print(f"JSON files generated:\n  Train: {train_json_path}\n  Validation: {val_json_path}")
+    print(f"JSON files generated:\n  Train: {train_json_path}\n  Validation: {valid_json_path}")
+
+
+def dataset_constructor(image_dir, semantic_dir, instance_dir, mask_dir, output_dir, mask_check=False):
+    """
+    数据集构造器
+    :param image_dir: iamge_dir
+    :param semantic_dir: semantic_dir
+    :param instance_dir: instance_dir
+    :param mask_dir: mask_dir
+    :param output_dir: output_dir
+    :param mask_check: 是否需要做标签可视化检查
+    """
+    assert os.path.isdir(image_dir), f"{image_dir} 不存在"
+    assert os.path.isdir(semantic_dir), f"{semantic_dir} 不存在"
+    assert os.path.isdir(instance_dir), f"{mask_dir} 不存在"
+    assert os.path.isdir(output_dir), f"{output_dir} 不存在"
+    assert len(os.listdir(mask_dir)) == 0, f"{mask_dir} 不为空，妨碍mask存储"
+
+    semantic_name_list = get_image_name_list(semantic_dir)
+    instance_name_list = get_image_name_list(instance_dir)
+    assert semantic_name_list == instance_name_list, "sematic mask 和 instance mask不匹配"
+    for mask_name in tqdm(semantic_name_list):
+        sematic_path = os.path.join(semantic_dir, mask_name)
+        instance_path = os.path.join(instance_dir, mask_name)
+        mask = combine_sematic_instance_mask(sematic_path, instance_path)
+        save_path = os.path.join(mask_dir, mask_name)
+        cv2.imwrite(save_path, mask)
+
+    mask_path_list = [os.path.join(mask_dir, mask_name) for mask_name in get_image_name_list(mask_dir)]
+    image_path_list = [os.path.join(image_dir, image_name) for image_name in get_image_name_list(image_dir)]
+    assert all(os.path.splitext(os.path.basename(image_path))[0] == os.path.splitext(os.path.basename(mask_path))[0]
+               for image_path, mask_path in zip(image_path_list, mask_path_list)), "image 和 mask 不匹配"
+    if mask_check:
+        label_check(image_path_list, mask_path_list)
+
+    train_image_path_list, train_mask_path_list, valid_image_path_list, valid_mask_path_list = split2train_and_valid(image_path_list, mask_path_list)
+    generate_meta_file(train_image_path_list, train_mask_path_list, valid_image_path_list, valid_mask_path_list, output_dir)
 
 
 def main():
-    root_path = ""
-    image_dir = os.path.join(root_path, "shrimpDetection/dataset/local/shrimp_test/JPEGImages")
-    mask_dir = os.path.join(root_path, "shrimpDetection/dataset/local/shrimp_test/mas")
-    output_path = os.path.join(root_path, "shrimpDetection/dataset/local")
-    generate_json_files(image_dir, mask_dir, image_dir, mask_dir, output_path)
+    image_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/shrimp_test/JPEGImages"
+    semantic_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/shrimp_test/SegmentationClass"
+    instance_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/shrimp_test/SegmentationObject"
+    mask_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/test_mask"
+    output_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/test_config"
+    dataset_constructor(image_dir, semantic_dir, instance_dir, mask_dir, output_dir, mask_check=True)
 
 
 if __name__ == '__main__':
