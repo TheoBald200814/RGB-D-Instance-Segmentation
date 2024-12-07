@@ -18,17 +18,24 @@
 import logging
 import os
 import sys
-from dataclasses import dataclass, field
-from functools import partial
-from typing import Any, Dict, List, Mapping, Optional
-
 import albumentations as A
 import numpy as np
 import torch
+import transformers
+import PIL.Image
+
+from dataclasses import dataclass, field
+from functools import partial
+from typing import Any, Dict, List, Mapping, Optional
+from tools.data_process import ready2training, get_label2id
 from datasets import load_dataset, Image
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
-
-import transformers
+from transformers.image_processing_utils import BatchFeature
+from transformers.trainer import EvalPrediction
+from transformers.trainer_utils import get_last_checkpoint
+from transformers.utils import check_min_version, send_example_telemetry
+from transformers.utils.versions import require_version
+from tqdm import tqdm
 from transformers import (
     AutoImageProcessor,
     AutoModelForUniversalSegmentation,
@@ -36,13 +43,6 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
-from transformers.image_processing_utils import BatchFeature
-from transformers.trainer import EvalPrediction
-from transformers.trainer_utils import get_last_checkpoint
-from transformers.utils import check_min_version, send_example_telemetry
-from transformers.utils.versions import require_version
-from tqdm import tqdm
-import PIL.Image
 
 
 logger = logging.getLogger(__name__)
@@ -100,59 +100,11 @@ class Arguments:
             )
         },
     )
-    image_dir: str = field(
-        default='',
-        metadata={
-            "help": (
-                "the directory to load images"
-            )
-        }
-    )
-    mask_dir: str = field(
-        default='',
-        metadata={
-            "help": (
-                "the directory to load masks"
-            )
-        }
-    )
-    sematic_dir: str = field(
-        default='',
-        metadata={
-            "help": (
-                "the directory to load sematic masks"
-            )
-        }
-    )
-    instance_dir: str = field(
-        default='',
-        metadata={
-            "help": (
-                "the directory to load instance masks"
-            )
-        }
-    )
     label2id_path: str = field(
         default='',
         metadata={
             "help": (
                 "the path of label2id.json"
-            )
-        }
-    )
-    do_mask: bool = field(
-        default=False,
-        metadata={
-            "help": (
-                "if need to combine the sematic mask and instance mask"
-            )
-        }
-    )
-    check: bool = field(
-        default=False,
-        metadata={
-            "help": (
-                "if need to check the image and mask location by visibility"
             )
         }
     )
@@ -169,6 +121,22 @@ class Arguments:
         metadata={
             "help": (
                 "the path of root"
+            )
+        }
+    )
+    train_json_path: str = field(
+        default='',
+        metadata={
+            "help": (
+                "the path of train json file"
+            )
+        }
+    )
+    valid_json_path: str = field(
+        default='',
+        metadata={
+            "help": (
+                "the path of valid json file"
             )
         }
     )
@@ -506,11 +474,10 @@ def main():
     # ------------------------------------------------------------------------------------------------
 
     # dataset = load_dataset("qubvel-hf/ade20k-mini", trust_remote_code=args.trust_remote_code)
-    from tools.data_process import ready2training, get_label2id
     # dataset_local = ready2training(args.image_dir, args.mask_dir, args.sematic_dir, args.instance_dir, do_mask=args.do_mask, check=args.check)
     data_files = {
-        "train": "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/train.json",
-        "validation": "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/validation.json",
+        "train": os.path.join(args.root_path, args.train_json_path),
+        "validation": os.path.join(args.root_path, args.valid_json_path),
     }
     dataset = load_dataset("json", data_files=data_files)
     dataset = dataset.cast_column("image", Image())
@@ -521,10 +488,7 @@ def main():
 
     # We need to specify the label2id mapping for the model
     # it is a mapping from semantic class name to class index.
-    # In case your dataset does not provide it, you can create it manually:
-    # label2id = {"background": 0, "shrimp": 1}
-    # label2id = dataset["train"][0]["semantic_class_to_id"]
-    label2id = get_label2id(args.label2id_path)
+    label2id = get_label2id(os.path.join(args.root_path, args.label2id_path))
 
     if args.do_reduce_labels:
         label2id = {name: idx for name, idx in label2id.items() if idx != 0}  # remove background class
