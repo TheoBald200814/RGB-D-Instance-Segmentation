@@ -18,7 +18,6 @@
 import logging
 import os
 import sys
-import time
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Dict, List, Mapping, Optional
@@ -26,7 +25,7 @@ from typing import Any, Dict, List, Mapping, Optional
 import albumentations as A
 import numpy as np
 import torch
-from datasets import load_dataset
+from datasets import load_dataset, Image
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
 
 import transformers
@@ -43,6 +42,7 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 from tqdm import tqdm
+import PIL.Image
 
 
 logger = logging.getLogger(__name__)
@@ -164,9 +164,65 @@ class Arguments:
             )
         }
     )
+    root_path: str = field(
+        default='',
+        metadata={
+            "help": (
+                "the path of root"
+            )
+        }
+    )
 
 
 def augment_and_transform_batch(
+    examples: Mapping[str, Any], image_processor: AutoImageProcessor
+) -> BatchFeature:
+    batch = {
+        "pixel_values": [],
+        "mask_labels": [],
+        "class_labels": [],
+    }
+    for pixel_values, mask_labels, class_labels in zip(examples["pixel_values"], examples["mask_labels"], examples["class_labels"]):
+        pixel_values = torch.tensor(pixel_values)
+        mask_labels = torch.tensor(mask_labels)
+        class_labels = torch.tensor(class_labels)
+
+
+        batch["pixel_values"].append(pixel_values)
+        batch["mask_labels"].append(mask_labels)
+        batch["class_labels"].append(class_labels)
+
+    return batch
+
+def augment_and_transform(example, transform, image_processor):
+    image = np.array(example["image"])
+    semantic_and_instance_masks = np.array(example["annotation"])[..., :2]
+    output = transform(image=image, mask=semantic_and_instance_masks)
+    aug_image = output["image"]
+    aug_semantic_and_instance_masks = output["mask"]
+    aug_instance_mask = aug_semantic_and_instance_masks[..., 1]
+
+    # Create mapping from instance id to semantic id
+    unique_semantic_id_instance_id_pairs = np.unique(aug_semantic_and_instance_masks.reshape(-1, 2), axis=0)
+    instance_id_to_semantic_id = {
+        instance_id: semantic_id for semantic_id, instance_id in unique_semantic_id_instance_id_pairs
+    }
+
+    model_inputs = image_processor(
+        images=[aug_image],
+        segmentation_maps=[aug_instance_mask],
+        instance_id_to_semantic_id=instance_id_to_semantic_id,
+        return_tensors="pt",
+    )
+
+    example["pixel_values"] = model_inputs.pixel_values[0].tolist()
+    example["mask_labels"] = model_inputs.mask_labels[0].tolist()
+    example["class_labels"] = model_inputs.class_labels[0]
+
+    return example
+
+
+def augment_and_transform_batch_backup(
     examples: Mapping[str, Any], transform: A.Compose, image_processor: AutoImageProcessor
 ) -> BatchFeature:
     batch = {
@@ -405,6 +461,14 @@ def find_last_checkpoint(training_args: TrainingArguments) -> Optional[str]:
     return checkpoint
 
 
+def resize_images(example, size=(256, 256)):
+    # Resize image
+    example["image"] = example["image"].resize(size, PIL.Image.BILINEAR)
+    # Resize annotation (use NEAREST to preserve label values)
+    example["annotation"] = example["annotation"].resize(size, PIL.Image.NEAREST)
+    return example
+
+
 def main():
     # See all possible arguments in https://huggingface.co/docs/transformers/main_classes/trainer#transformers.TrainingArguments
     # or by passing the --help flag to this script.
@@ -441,14 +505,24 @@ def main():
     # Load dataset, prepare splits
     # ------------------------------------------------------------------------------------------------
 
-    # dataset = load_dataset(args.dataset_name, trust_remote_code=args.trust_remote_code)
+    # dataset = load_dataset("qubvel-hf/ade20k-mini", trust_remote_code=args.trust_remote_code)
     from tools.data_process import ready2training, get_label2id
-    dataset = ready2training(args.image_dir, args.mask_dir, args.sematic_dir, args.instance_dir, do_mask=args.do_mask, check=args.check)
+    # dataset_local = ready2training(args.image_dir, args.mask_dir, args.sematic_dir, args.instance_dir, do_mask=args.do_mask, check=args.check)
+    data_files = {
+        "train": "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/train.json",
+        "validation": "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/validation.json",
+    }
+    dataset = load_dataset("json", data_files=data_files)
+    dataset = dataset.cast_column("image", Image())
+    dataset = dataset.cast_column("annotation", Image())
+    # image resize
+    # dataset["train"] = dataset["train"].map(resize_images)
+    # dataset["validation"] = dataset["validation"].map(resize_images)
 
     # We need to specify the label2id mapping for the model
     # it is a mapping from semantic class name to class index.
     # In case your dataset does not provide it, you can create it manually:
-    # label2id = {"background": 0, "cat": 1, "dog": 2}
+    # label2id = {"background": 0, "shrimp": 1}
     # label2id = dataset["train"][0]["semantic_class_to_id"]
     label2id = get_label2id(args.label2id_path)
 
@@ -495,15 +569,23 @@ def main():
     )
 
     # Make transform functions for batch and apply for dataset splits
-    train_transform_batch = partial(
-        augment_and_transform_batch, transform=train_augment_and_transform, image_processor=image_processor
-    )
-    validation_transform_batch = partial(
-        augment_and_transform_batch, transform=validation_transform, image_processor=image_processor
-    )
+    # train_transform_batch = partial(
+    #     augment_and_transform_batch, transform=train_augment_and_transform, image_processor=image_processor
+    # )
+    # validation_transform_batch = partial(
+    #     augment_and_transform_batch, transform=validation_transform, image_processor=image_processor
+    # )
 
-    dataset["train"] = dataset["train"].with_transform(train_transform_batch)
-    dataset["validation"] = dataset["validation"].with_transform(validation_transform_batch)
+    transform_single = partial(
+        augment_and_transform, transform=train_augment_and_transform, image_processor=image_processor
+    )
+    transform_batch = partial(
+        augment_and_transform_batch, image_processor=image_processor
+    )
+    dataset["train"] = dataset["train"].map(transform_single)
+    dataset["validation"] = dataset["validation"].map(transform_single)
+    dataset["train"] = dataset["train"].with_transform(transform_batch)
+    dataset["validation"] = dataset["validation"].with_transform(transform_batch)
 
     # ------------------------------------------------------------------------------------------------
     # Model training and evaluation with Trainer API
