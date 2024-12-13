@@ -27,7 +27,7 @@ import PIL.Image
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Dict, List, Mapping, Optional
-from tools.data_process import ready2training, get_label2id
+from tools.data_process import get_label2id
 from datasets import load_dataset, Image
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from transformers.image_processing_utils import BatchFeature

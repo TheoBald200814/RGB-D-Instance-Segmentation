@@ -287,6 +287,7 @@ def preload_frames(file_path: str, timeout_ms=10000):
                 "gamma_depth": gamma_depth,
             }
             copy_image = copy.deepcopy(image)
+            del image
             image_list.append(copy_image)
 
     except Exception as e:
@@ -402,17 +403,18 @@ def init_save_dir(save_path: str, enum_image_type: tuple):
     """
     if not os.path.exists(save_path):
         os.makedirs(save_path)
+
+    if len(os.listdir(save_path)) == 0:
+        enum_file_type = ("png", "npy")
+        try:
+            for image_type in enum_image_type:
+                os.mkdir(os.path.join(save_path, image_type))
+                for file_type in enum_file_type:
+                    os.mkdir(os.path.join(save_path, image_type, file_type))
+        except Exception as e:
+            print(e)
     else:
-        print("需要确保该文件夹为空")
-        # TODO: ensure this dir is empty!
-    enum_file_type = ("png", "npy")
-    try:
-        for image_type in enum_image_type:
-            os.mkdir(os.path.join(save_path, image_type))
-            for file_type in enum_file_type:
-                os.mkdir(os.path.join(save_path, image_type, file_type))
-    except Exception as e:
-        print(e)
+        print(f"检查{save_path}下的文件结构")
 
 
 def save_frame(image: dict, frame_index: int, save_directory: str, enum_image_type: tuple):
@@ -439,9 +441,11 @@ def save_frame(image: dict, frame_index: int, save_directory: str, enum_image_ty
 
 
 def main():
-    file_path = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/original_realsense/recording_1_24_11_22.bag"
+    file_path = "/Users/theobald/Library/Mobile Documents/com~apple~CloudDocs/datasets/instance_seg_shrimp/intel_realsense/24_12_03/recording_9392_20241203.bag"
     save_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/processed_realsense"
     checkout(file_path, save_dir)
+    # 已经处理的数据：'/Users/theobald/Library/Mobile Documents/com~apple~CloudDocs/datasets/instance_seg_shrimp/intel_realsense/24_11_26'
+    #             ：'/Users/theobald/Library/Mobile Documents/com~apple~CloudDocs/datasets/instance_seg_shrimp/intel_realsense/24_12_03'
 
 
 if __name__ == "__main__":
