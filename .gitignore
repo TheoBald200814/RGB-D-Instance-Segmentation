@@ -2,3 +2,15 @@
 .DS_Store
 
 .idea/
+
+*.safetensors
+
+*.pt
+
+*.pth
+
+*.bin
+
+*.jpg
+
+*.png

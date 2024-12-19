@@ -441,11 +441,9 @@ def save_frame(image: dict, frame_index: int, save_directory: str, enum_image_ty
 
 
 def main():
-    file_path = "/Users/theobald/Library/Mobile Documents/com~apple~CloudDocs/datasets/instance_seg_shrimp/intel_realsense/24_12_03/recording_9392_20241203.bag"
+    file_path = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/original_realsense/recording_6444_20241126.bag"
     save_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/processed_realsense"
     checkout(file_path, save_dir)
-    # 已经处理的数据：'/Users/theobald/Library/Mobile Documents/com~apple~CloudDocs/datasets/instance_seg_shrimp/intel_realsense/24_11_26'
-    #             ：'/Users/theobald/Library/Mobile Documents/com~apple~CloudDocs/datasets/instance_seg_shrimp/intel_realsense/24_12_03'
 
 
 if __name__ == "__main__":

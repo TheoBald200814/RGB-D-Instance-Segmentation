@@ -152,6 +152,7 @@ def augment_and_transform_batch(
     }
     for pixel_values, mask_labels, class_labels in zip(examples["pixel_values"], examples["mask_labels"], examples["class_labels"]):
         pixel_values = torch.tensor(pixel_values)
+        # pixel_values = torch.tensor(np.tile(pixel_values, (2, 1, 1)), dtype=torch.float32)
         mask_labels = torch.tensor(mask_labels)
         class_labels = torch.tensor(class_labels)
 
@@ -483,8 +484,8 @@ def main():
     dataset = dataset.cast_column("image", Image())
     dataset = dataset.cast_column("annotation", Image())
     # image resize
-    # dataset["train"] = dataset["train"].map(resize_images)
-    # dataset["validation"] = dataset["validation"].map(resize_images)
+    dataset["train"] = dataset["train"].map(resize_images)
+    dataset["validation"] = dataset["validation"].map(resize_images)
 
     # We need to specify the label2id mapping for the model
     # it is a mapping from semantic class name to class index.
@@ -506,6 +507,12 @@ def main():
         ignore_mismatched_sizes=True,
         # token=args.token,
     )
+    # model = transformers.Mask2FormerForUniversalSegmentation.from_pretrained(
+    #     args.model_name_or_path,
+    #     label2id=label2id,
+    #     id2label=id2label,
+    #     ignore_mismatched_sizes=True,
+    # )
 
     image_processor = AutoImageProcessor.from_pretrained(
         args.model_name_or_path,
