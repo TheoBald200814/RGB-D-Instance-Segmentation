@@ -3,27 +3,16 @@ import os
 
 
 def main():
-    train_image_name_list = get_image_name_list(
-        "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/mask2former/experiments/24_12_19/exp_datasets/train/images")
-    train_mask_name_list = get_image_name_list(
-        "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/mask2former/experiments/24_12_19/exp_datasets/train/mask")
-    valid_image_name_list = get_image_name_list(
-        "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/mask2former/experiments/24_12_19/exp_datasets/valid/images")
-    valid_mask_name_list = get_image_name_list(
-        "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/mask2former/experiments/24_12_19/exp_datasets/valid/mask")
-    train_image_path_list = [os.path.join(
-        "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/mask2former/experiments/24_12_19/exp_datasets/train/images",
-        image_name) for image_name in train_image_name_list]
-    train_mask_path_list = [os.path.join(
-        "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/mask2former/experiments/24_12_19/exp_datasets/train/mask",
-        mask_name) for mask_name in train_mask_name_list]
-    valid_image_path_list = [os.path.join(
-        "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/mask2former/experiments/24_12_19/exp_datasets/valid/images",
-        image_name) for image_name in valid_image_name_list]
-    valid_mask_path_list = [os.path.join(
-        "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/mask2former/experiments/24_12_19/exp_datasets/valid/mask",
-        mask_name) for mask_name in valid_mask_name_list]
-    output_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/mask2former/experiments/24_12_19/exp_datasets"
+    root_path = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/mask2former/experiments/tiny_datasets"
+    train_image_name_list = get_image_name_list(os.path.join(root_path, "train/images"))
+    train_mask_name_list = get_image_name_list(os.path.join(root_path, "train/mask"))
+    valid_image_name_list = get_image_name_list(os.path.join(root_path, "valid/images"))
+    valid_mask_name_list = get_image_name_list(os.path.join(root_path, "valid/mask"))
+    train_image_path_list = [os.path.join(os.path.join(root_path, "train/images"), image_name) for image_name in train_image_name_list]
+    train_mask_path_list = [os.path.join(os.path.join(root_path, "train/mask"), mask_name) for mask_name in train_mask_name_list]
+    valid_image_path_list = [os.path.join(os.path.join(root_path, "valid/images"), image_name) for image_name in valid_image_name_list]
+    valid_mask_path_list = [os.path.join(os.path.join(root_path, "valid/mask"), mask_name) for mask_name in valid_mask_name_list]
+    output_dir = root_path
 
     generate_meta_file(train_image_path_list, train_mask_path_list, valid_image_path_list, valid_mask_path_list,
                        output_dir)
