@@ -31,7 +31,7 @@ from functools import partial
 from typing import Any, Dict, List, Mapping, Optional
 
 from transformers.models.mask2former.modeling_mask2former import Mask2FormerForUniversalSegmentationOutput, \
-    Mask2FormerModel, Mask2FormerLoss
+    Mask2FormerModel, Mask2FormerLoss, Mask2FormerPixelLevelModule
 
 from mask2former.tools.data_process import get_label2id
 from datasets import load_dataset, Image
@@ -87,6 +87,14 @@ class CustomMask2FormerModel(Mask2FormerModel):
     def __init__(self, config):
         print("在CustomMask2FormerModel的构造函数中执行super().__init__(config)")
         super().__init__(config)
+        self.pixel_level_module = CustomMask2FormerPixelLevelModule(config)
+
+
+class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
+    main_input_name = "pixel_values"
+    def __init__(self, config):
+        print("在CustomMask2FormerPixelLevelModule的构造函数中执行super().__init__(config)")
+        super().__init__(config)
 
 
 class CustomMask2FormerForUniversalSegmentation(Mask2FormerForUniversalSegmentation):
@@ -126,7 +134,7 @@ def main():
     # See all possible arguments in https://huggingface.co/docs/transformers/main_classes/trainer#transformers.TrainingArguments
     # or by passing the --help flag to this script.
 
-    set_seed(42)
+    # set_seed(42) # 在main函数层面显式声明seed似乎不会对训练结果产生影响
 
     parser = HfArgumentParser([Arguments, TrainingArguments])
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):

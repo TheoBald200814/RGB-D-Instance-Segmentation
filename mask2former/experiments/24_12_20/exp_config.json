@@ -1,7 +1,7 @@
 {
   "root_path": "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection",
   "model_name_or_path": "mask2former/checkpoints/standard",
-  "output_dir": "mask2former/experiments/24_12_20/checkpoints/24_12_20_03",
+  "output_dir": "mask2former/experiments/24_12_20/checkpoints/24_12_20_04",
   "dataset_name": "qubvel-hf/ade20k-mini",
   "do_reduce_labels": false,
   "image_height": 256,

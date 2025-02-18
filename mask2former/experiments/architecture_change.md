@@ -69,7 +69,7 @@ finetuning.py在实验三中的路径
 | augment_and_transform_batch <br> augment_and_transform <br> collate_fn | experiments/24_12_20/exp3_finetuning.py | experiments/utils/augment_and_transform.py |
 |                             setup_logging                              | experiments/24_12_20/exp3_finetuning.py | experiments/utils/log.py                   |
 | ModelOutput <br> nested_cpu <br> Evaluator <br> find_last_checkpoint   | experiments/24_12_20/exp3_finetuning.py | experiments/utils/model_essential_part.py  |
-#### 继承 Mask2FormerConfig
+#### 继承一 Mask2FormerConfig
 ```python
 class CustomConfig(Mask2FormerConfig):
     model_type = "mask2former"
@@ -78,7 +78,7 @@ class CustomConfig(Mask2FormerConfig):
         self.attribute = attribute
         super().__init__(**kwargs)
 ```
-#### 继承 Mask2FormerForUniversalSegmentation
+#### 继承二 Mask2FormerForUniversalSegmentation
 ```python
 class CustomMask2FormerForUniversalSegmentation(Mask2FormerForUniversalSegmentation):
     main_input_name = "pixel_values"
@@ -89,7 +89,7 @@ class CustomMask2FormerForUniversalSegmentation(Mask2FormerForUniversalSegmentat
         set_seed(42)
         self.model = CustomMask2FormerModel(config)
 ```
-#### 继承 Mask2FormerModel
+#### 继承三 Mask2FormerModel
 ```python
 class CustomMask2FormerModel(Mask2FormerModel):
     main_input_name = "pixel_values"
@@ -97,31 +97,39 @@ class CustomMask2FormerModel(Mask2FormerModel):
         print("在CustomMask2FormerModel的构造函数中执行super().__init__(config)")
         super().__init__(config)
 ```
+#### 继承四 Mask2FormerPixelLevelModule
+```python
+class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
+    main_input_name = "pixel_values"
+    def __init__(self, config):
+        print("在CustomMask2FormerPixelLevelModule的构造函数中执行super().__init__(config)")
+        super().__init__(config)
+```
 #### 继承后进行模型训练实验，得到的test metrics
 
-  |            指标            | 24/12/20/03 |
-  |:------------------------:|:-----------:|
-  |          epoch           |     1.0     |
-  |        test_loss         |   21.3779   |
-  |         test_map         |   0.2113    |
-  |       test_map_50        |   0.3012    |
-  |       test_map_75        |   0.3012    |
-  |   test_map_background    |    -1.0     |
-  |      test_map_large      |    -1.0     |
-  |     test_map_medium      |   0.2649    |
-  |     test_map_shrimp      |   0.2113    |
-  |      test_map_small      |     0.2     |
-  |        test_mar_1        |    0.375    |
-  |       test_mar_10        |    0.525    |
-  |       test_mar_100       |    0.725    |
-  | test_mar_100_backgr ound |    -1.0     |
-  |   test_mar_100_shrimp    |    0.725    |
-  |      test_mar_large      |    -1.0     |
-  |     test_mar_medium      |     0.7     |
-  |      test_mar_small      |     0.8     |
-  |       test_runtime       | 0:00:03.51  |
-  | test_samples_per_second  |    0.853    |
-  |  test_steps_per_second   |    0.284    |
+  |            指标            | 24/12/20/03（继承一、二、三）| 24/12/20/04（继承一、二、三、四） |
+  |:------------------------:|:--------------------:|:----------------------:|
+  |          epoch           |         1.0          |          1.0           |
+  |        test_loss         |       21.3779        |        21.3779         |
+  |         test_map         |        0.2113        |         0.2113         |
+  |       test_map_50        |        0.3012        |         0.3012         |
+  |       test_map_75        |        0.3012        |         0.3012         |
+  |   test_map_background    |         -1.0         |          -1.0          |
+  |      test_map_large      |         -1.0         |          -1.0          |
+  |     test_map_medium      |        0.2649        |         0.2649         |
+  |     test_map_shrimp      |        0.2113        |         0.2113         |
+  |      test_map_small      |         0.2          |          0.2           |
+  |        test_mar_1        |        0.375         |         0.375          |
+  |       test_mar_10        |        0.525         |         0.525          |
+  |       test_mar_100       |        0.725         |         0.725          |
+  | test_mar_100_backgr ound |         -1.0         |          -1.0          |
+  |   test_mar_100_shrimp    |        0.725         |         0.725          |
+  |      test_mar_large      |         -1.0         |          -1.0          |
+  |     test_mar_medium      |         0.7          |          0.7           |
+  |      test_mar_small      |         0.8          |          0.8           |
+  |       test_runtime       |      0:00:03.51      |       0:00:03.41       |
+  | test_samples_per_second  |        0.853         |         0.877          |
+  |  test_steps_per_second   |        0.284         |         0.292          |
  #### 结论
 根据上述“类图”可分析出Mask2Former模型内部的继承关系、聚合关系。基于这些关系实现类的继承、替换，就可以实现架构的调整。
 
