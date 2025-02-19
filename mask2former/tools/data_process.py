@@ -7,15 +7,17 @@ import json
 
 from PIL import Image
 import shutil
-import numpy as np
-import cv2
 import random
 import string
 import PIL.ImageOps
 from tqdm import tqdm
 from datasets import Dataset, DatasetDict, Image as datasets_Image
-import os
 import json
+import os
+import cv2
+import numpy as np
+from PIL import Image
+from typing import Dict, Tuple, List
 
 
 def get_unique_colors(image_path):
@@ -143,6 +145,11 @@ def image_sort(path: str):
     os.rmdir(image_cache_path)
 
 
+def generate_random_color():
+    """生成一个随机的 RGB 颜色"""
+    return (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+
+
 def label_check(image_path_list, mask_path_list):
     """
     标签检查
@@ -150,28 +157,50 @@ def label_check(image_path_list, mask_path_list):
     :param mask_path_list: mask_path_list
     """
     for image_path, mask_path in zip(image_path_list, mask_path_list):
+        # 读取图像和掩码
         image = cv2.imread(image_path, cv2.IMREAD_COLOR)
         mask = cv2.imread(mask_path, cv2.IMREAD_COLOR)
-        # 基于opencv打开并处理图像数据，因此sematic mask在第三层；instance mask在第二层
-        semantic_mask = mask[..., 2]
-        instance_mask = mask[..., 1]
-        yellow_mask = np.zeros_like(image, dtype=np.uint8)
-        yellow_mask[semantic_mask != 0] = (0, 255, 255)  # 黄色
-        blue_mask = np.zeros_like(image, dtype=np.uint8)
-        blue_mask[instance_mask !=0] = (0, 0, 255)
+
+        # 提取语义掩码和实例掩码
+        semantic_mask = mask[..., 2]  # 语义掩码在第三通道
+        instance_mask = mask[..., 1]  # 实例掩码在第二通道
+
+        # 处理语义掩码（不同语义区域用不同颜色）
+        unique_semantics = np.unique(semantic_mask)  # 获取所有唯一的语义区域 ID
+        unique_semantics = unique_semantics[unique_semantics != 0]  # 排除背景（0）
+
+        semantic_colored = np.zeros_like(image, dtype=np.uint8)
+        for semantic_id in unique_semantics:
+            color = generate_random_color()  # 为每个语义区域生成一个随机颜色
+            semantic_colored[semantic_mask == semantic_id] = color  # 用该颜色填充语义区域
+
         alpha = 0.5  # 透明度
-        yellow_mask = cv2.addWeighted(yellow_mask, alpha, np.zeros_like(yellow_mask), 1 - alpha, 0)
-        blue_mask = cv2.addWeighted(blue_mask, alpha, np.zeros_like(blue_mask), 1 - alpha, 0)
-        image = cv2.addWeighted(image, 1, yellow_mask, 1, 0)
-        image = cv2.addWeighted(image, 1, blue_mask, 1, 0)
+        semantic_colored = cv2.addWeighted(semantic_colored, alpha, np.zeros_like(semantic_colored), 1 - alpha, 0)
+        semantic_image = cv2.addWeighted(image, 1, semantic_colored, 1, 0)
 
-        semantic_mask = np.where(semantic_mask == 0, 255, semantic_mask)
-        instance_mask = np.where(instance_mask == 0, 255, instance_mask)
-        semantic_mask = np.dstack((semantic_mask, semantic_mask, semantic_mask))
-        instance_mask = np.dstack((instance_mask, instance_mask, instance_mask))
+        # 处理实例掩码（不同实例用不同颜色）
+        unique_instances = np.unique(instance_mask)  # 获取所有唯一的实例 ID
+        unique_instances = unique_instances[unique_instances != 0]  # 排除背景（0）
 
-        assert image.shape == semantic_mask.shape == instance_mask.shape
-        row = cv2.hconcat([image, semantic_mask, instance_mask])
+        instance_colored = np.zeros_like(image, dtype=np.uint8)
+        for instance_id in unique_instances:
+            color = generate_random_color()  # 为每个实例生成一个随机颜色
+            instance_colored[instance_mask == instance_id] = color  # 用该颜色填充实例区域
+
+        instance_colored = cv2.addWeighted(instance_colored, alpha, np.zeros_like(instance_colored), 1 - alpha, 0)
+        instance_image = cv2.addWeighted(image, 1, instance_colored, 1, 0)
+
+        # 处理掩码显示
+        semantic_mask_display = np.where(semantic_mask == 0, 255, semantic_mask)
+        instance_mask_display = np.where(instance_mask == 0, 255, instance_mask)
+        semantic_mask_display = np.dstack((semantic_mask_display, semantic_mask_display, semantic_mask_display))
+        instance_mask_display = np.dstack((instance_mask_display, instance_mask_display, instance_mask_display))
+
+        # 确保所有图像的形状一致
+        assert image.shape == semantic_mask_display.shape == instance_mask_display.shape
+
+        # 将结果拼接并显示
+        row = cv2.hconcat([semantic_image, instance_image, semantic_mask_display, instance_mask_display])
         cv2.imshow("image & sematic & instance", row)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
