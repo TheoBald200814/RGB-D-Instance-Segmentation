@@ -412,7 +412,7 @@ def generate_meta_file(train_image_path_list, train_mask_path_list,
     print(f"JSON files generated:\n  Train: {train_json_path}\n  Validation: {valid_json_path}")
 
 
-def dataset_constructor(image_dir, semantic_dir, instance_dir, mask_dir, output_dir, mask_check=False):
+def old_dataset_constructor(image_dir, semantic_dir, instance_dir, mask_dir, output_dir, mask_check=False):
     """
     数据集构造器
     :param image_dir: iamge_dir
@@ -449,13 +449,136 @@ def dataset_constructor(image_dir, semantic_dir, instance_dir, mask_dir, output_
     generate_meta_file(train_image_path_list, train_mask_path_list, valid_image_path_list, valid_mask_path_list, output_dir)
 
 
+def load_coco_annotations(json_path: str) -> Tuple[Dict, Dict]:
+    """加载并组织COCO格式的标注数据"""
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+
+    images = {img['id']: img for img in data['images']}
+    annotations = {}
+    for ann in data['annotations']:
+        img_id = ann['image_id']
+        annotations.setdefault(img_id, []).append(ann)
+
+    return images, annotations
+
+
+def create_mask_from_polygon(polygon: List[float], image_size: Tuple[int, int]) -> np.ndarray:
+    """将多边形坐标转换为二值掩码"""
+    mask = np.zeros(image_size[::-1], dtype=np.uint8)
+    pts = np.array(polygon, np.int32).reshape((-1, 1, 2))
+    cv2.fillPoly(mask, [pts], color=1)
+    return mask
+
+
+def generate_combined_masks(
+        images: Dict,
+        annotations: Dict,
+        output_dir: str,
+        image_dir: str,
+        max_instances: int = 255
+) -> None:
+    """
+    生成并保存三通道标签图像（第二、第三通道相同）
+
+    参数说明：
+    max_instances - 单图最大允许实例数（默认255）
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    for img_id, img_info in images.items():
+        # 获取图像尺寸
+        img_path = os.path.join(image_dir, img_info['file_name'])
+        if os.path.exists(img_path):
+            img = Image.open(img_path)
+            width, height = img.size
+        else:
+            width, height = img_info['width'], img_info['height']
+
+        # 初始化标签矩阵
+        semantic_mask = np.zeros((height, width), dtype=np.uint8)
+        instance_mask = np.zeros((height, width), dtype=np.uint8)
+
+        # 处理实例标注
+        instance_id = 1
+        for ann in annotations.get(img_id, []):
+            # 检查实例ID是否超出限制
+            if instance_id > max_instances:
+                raise ValueError(f"实例数量超过最大限制 {max_instances}（图像：{img_info['file_name']}）")
+
+            # 处理语义标签（假设单类别）
+            for polygon in ann['segmentation']:
+                poly_mask = create_mask_from_polygon(polygon, (width, height))
+                semantic_mask = np.where(poly_mask, 1, semantic_mask)
+
+            # 处理实例标签
+            instance_poly = ann['segmentation'][0]
+            instance_region = create_mask_from_polygon(instance_poly, (width, height))
+            instance_mask = np.where(instance_region, instance_id, instance_mask)
+
+            instance_id += 1
+
+        # 构建三通道图像（第二、第三通道相同）
+        combined = np.stack([
+            semantic_mask,
+            instance_mask,
+            instance_mask  # 第三通道复制第二通道
+        ], axis=-1)
+
+        # 保存结果
+        output_path = os.path.join(
+            output_dir,
+            f"{os.path.splitext(img_info['file_name'])[0]}.png"
+        )
+        Image.fromarray(combined).save(output_path)
+
+
+def dataset_constructor(image_dir, mask_dir, output_dir, mask_check=True, data_form='cvat', semantic_dir=None, instance_dir=None, coco_json_path=None):
+    assert os.path.isdir(image_dir), f"{image_dir} 不存在"
+    assert os.path.isdir(mask_dir), f"{mask_dir} 不存在"
+    assert os.path.isdir(output_dir), f"{output_dir} 不存在"
+    if data_form == 'cvat': # cvat segmentation
+        assert os.path.isdir(semantic_dir), f"{semantic_dir} 不存在"
+        assert os.path.isdir(instance_dir), f"{instance_dir} 不存在"
+        assert len(os.listdir(mask_dir)) == 0, f"{mask_dir} 不为空，妨碍mask存储"
+
+        semantic_name_list = get_image_name_list(semantic_dir)
+        instance_name_list = get_image_name_list(instance_dir)
+        assert semantic_name_list == instance_name_list, "sematic mask 和 instance mask不匹配"
+        for mask_name in tqdm(semantic_name_list):
+            sematic_path = os.path.join(semantic_dir, mask_name)
+            instance_path = os.path.join(instance_dir, mask_name)
+            mask = combine_sematic_instance_mask(sematic_path, instance_path)
+            save_path = os.path.join(mask_dir, mask_name)
+            cv2.imwrite(save_path, mask)
+
+    else: # roboflow segmentation
+        assert os.path.isfile(coco_json_path), f"{coco_json_path} 不存在"
+        # TODO roboflow datasets constructing...
+        img_data, ann_data = load_coco_annotations(coco_json_path)
+        generate_combined_masks(img_data, ann_data, mask_dir, image_dir)
+
+    mask_path_list = [os.path.join(mask_dir, mask_name) for mask_name in get_image_name_list(mask_dir)]
+    image_path_list = [os.path.join(image_dir, image_name) for image_name in get_image_name_list(image_dir)]
+    assert all(os.path.splitext(os.path.basename(image_path))[0] == os.path.splitext(os.path.basename(mask_path))[0]
+               for image_path, mask_path in zip(image_path_list, mask_path_list)), "image 和 mask 不匹配"
+    if mask_check:
+        label_check(image_path_list, mask_path_list)
+
+    train_image_path_list, train_mask_path_list, valid_image_path_list, valid_mask_path_list = split2train_and_valid(
+        image_path_list, mask_path_list)
+    generate_meta_file(train_image_path_list, train_mask_path_list, valid_image_path_list, valid_mask_path_list,
+                       output_dir)
+
+
 def main():
-    image_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/shrimp_test/JPEGImages"
-    semantic_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/shrimp_test/SegmentationClass"
-    instance_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/shrimp_test/SegmentationObject"
-    mask_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/test_mask"
-    output_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/test_config"
-    dataset_constructor(image_dir, semantic_dir, instance_dir, mask_dir, output_dir, mask_check=True)
+    image_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/test/roboflow/image"
+    semantic_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/test/cvat/semantic"
+    instance_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/test/cvat/instance"
+    mask_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/test/roboflow/mask"
+    output_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/test/roboflow"
+    coco_json_path = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/test/roboflow/_annotations.coco.json"
+    dataset_constructor(image_dir, mask_dir, output_dir, mask_check=True, data_form='coco', semantic_dir=semantic_dir, instance_dir=instance_dir, coco_json_path=coco_json_path)
 
 
 if __name__ == '__main__':
