@@ -351,7 +351,7 @@ def get_label2id(json_path):
     return label2id
 
 
-def split2train_and_valid(image_path_list, mask_path_list, valid_rate=0.3):
+def split2train_and_valid(image_path_list, mask_path_list, valid_rate=0):
     """
     按照比例将数据集划分为训练集和验证集
     :param image_path_list: image_path_list
@@ -383,7 +383,7 @@ def generate_meta_file(train_image_path_list, train_mask_path_list,
     :semantic_class_to_id: {"background": 0, "shrimp": 1}
     """
     if semantic_class_to_id is None:
-        semantic_class_to_id = {"background": 0, "shrimp": 1}
+        semantic_class_to_id = {"background": 0, "organ": 1, "shrimp": 2}
 
     def meta_data_unit(image_path_list, mask_path_list):
         data = []
@@ -509,7 +509,7 @@ def generate_combined_masks(
             # 处理语义标签（假设单类别）
             for polygon in ann['segmentation']:
                 poly_mask = create_mask_from_polygon(polygon, (width, height))
-                semantic_mask = np.where(poly_mask, 1, semantic_mask)
+                semantic_mask = np.where(poly_mask, ann['category_id'], semantic_mask)
 
             # 处理实例标签
             instance_poly = ann['segmentation'][0]
@@ -526,9 +526,10 @@ def generate_combined_masks(
         ], axis=-1)
 
         # 保存结果
+        image_name = img_info['file_name'].split("_")
         output_path = os.path.join(
             output_dir,
-            f"{os.path.splitext(img_info['file_name'])[0]}.png"
+            image_name[0] + "_" + image_name[1] + ".png"
         )
         Image.fromarray(combined).save(output_path)
 
@@ -554,9 +555,12 @@ def dataset_constructor(image_dir, mask_dir, output_dir, mask_check=True, data_f
 
     else: # roboflow segmentation
         assert os.path.isfile(coco_json_path), f"{coco_json_path} 不存在"
-        # TODO roboflow datasets constructing...
         img_data, ann_data = load_coco_annotations(coco_json_path)
         generate_combined_masks(img_data, ann_data, mask_dir, image_dir)
+        for image_name in get_image_name_list(image_dir): # 对原始图片文件重命名
+            new_image_name = image_name.split("_")
+            new_image_name = new_image_name[0] + "_" + new_image_name[1] + ".png"
+            os.renames(os.path.join(image_dir, image_name), os.path.join(image_dir, new_image_name))
 
     mask_path_list = [os.path.join(mask_dir, mask_name) for mask_name in get_image_name_list(mask_dir)]
     image_path_list = [os.path.join(image_dir, image_name) for image_name in get_image_name_list(image_dir)]
@@ -572,12 +576,12 @@ def dataset_constructor(image_dir, mask_dir, output_dir, mask_check=True, data_f
 
 
 def main():
-    image_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/test/roboflow/image"
-    semantic_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/test/cvat/semantic"
-    instance_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/test/cvat/instance"
-    mask_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/test/roboflow/mask"
-    output_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/test/roboflow"
-    coco_json_path = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/test/roboflow/_annotations.coco.json"
+    image_dir = "shrimpDetection/dataset/local/25_02_27_depth/DepthImageDatasets/valid"
+    semantic_dir = "/dataset/local/backup/test/cvat/semantic"
+    instance_dir = "/dataset/local/backup/test/cvat/instance"
+    mask_dir = "shrimpDetection/dataset/local/25_02_27_depth/valid/mask"
+    output_dir = "shrimpDetection/dataset/local/25_02_27_depth/valid"
+    coco_json_path = "shrimpDetection/dataset/local/25_02_27_depth/DepthImageDatasets/_annotations.coco.json"
     dataset_constructor(image_dir, mask_dir, output_dir, mask_check=True, data_form='coco', semantic_dir=semantic_dir, instance_dir=instance_dir, coco_json_path=coco_json_path)
 
 
