@@ -21,42 +21,29 @@ import sys
 import albumentations as A
 import numpy as np
 import torch
-import transformers
 import PIL.Image
 import random
-from torch import Tensor, nn
 
-from dataclasses import dataclass, field
 from functools import partial
-from typing import Any, Dict, List, Mapping, Optional
 
-from transformers.models.mask2former.modeling_mask2former import Mask2FormerForUniversalSegmentationOutput, \
-    Mask2FormerModel, Mask2FormerLoss, Mask2FormerPixelLevelModule
+from transformers.models.mask2former.modeling_mask2former import Mask2FormerModel, Mask2FormerPixelLevelModule
 
 from mask2former.tools.data_process import get_label2id
 from datasets import load_dataset, Image
-from torchmetrics.detection.mean_ap import MeanAveragePrecision
-from transformers.image_processing_utils import BatchFeature
-from transformers.trainer import EvalPrediction
-from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
-from tqdm import tqdm
 from transformers import (
     AutoImageProcessor,
-    AutoModelForUniversalSegmentation,
     HfArgumentParser,
     Trainer,
     TrainingArguments, Mask2FormerConfig,
 )
-from transformers import PretrainedConfig, Mask2FormerForUniversalSegmentation
+from transformers import Mask2FormerForUniversalSegmentation
 
-from transformers import AutoConfig
-
-from mask2former.experiments.utils.arguments import Arguments
-from mask2former.experiments.utils.augment_and_transform import augment_and_transform, augment_and_transform_batch, collate_fn
-from mask2former.experiments.utils.model_essential_part import find_last_checkpoint, Evaluator
-from mask2former.experiments.utils.log import setup_logging
+from mask2former.experiments.architecture.utils.arguments import Arguments
+from mask2former.experiments.architecture.utils.augment_and_transform import augment_and_transform, augment_and_transform_batch, collate_fn
+from mask2former.experiments.architecture.utils.model_essential_part import find_last_checkpoint, Evaluator
+from mask2former.experiments.architecture.utils.log import setup_logging
 
 logger = logging.getLogger(__name__)
 
