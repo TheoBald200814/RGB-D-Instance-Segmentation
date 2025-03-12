@@ -1,0 +1,29 @@
+[
+    {
+        "image": "dataset/local/experiment_tiny_set/valid/images/10.jpg",
+        "annotation": "dataset/local/experiment_tiny_set/valid/mask/10.png",
+        "semantic_class_to_id": {
+            "background": 0,
+            "organ": 1,
+            "shrimp": 2
+        }
+    },
+    {
+        "image": "dataset/local/experiment_tiny_set/valid/images/11.jpg",
+        "annotation": "dataset/local/experiment_tiny_set/valid/mask/11.png",
+        "semantic_class_to_id": {
+            "background": 0,
+            "organ": 1,
+            "shrimp": 2
+        }
+    },
+    {
+        "image": "dataset/local/experiment_tiny_set/valid/images/12.jpg",
+        "annotation": "dataset/local/experiment_tiny_set/valid/mask/12.png",
+        "semantic_class_to_id": {
+            "background": 0,
+            "organ": 1,
+            "shrimp": 2
+        }
+    }
+]
