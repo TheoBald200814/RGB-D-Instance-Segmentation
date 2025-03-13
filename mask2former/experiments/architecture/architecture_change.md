@@ -12,10 +12,11 @@
 ## 实验清单
 | 编号  | 内容                                                                                                                              | 状态  |    日期    |
 |:---:|---------------------------------------------------------------------------------------------------------------------------------|-----|:--------:|
-| 实验一 | 测试Mask2Former各模块之间的数据传递格式(例如Backbone的input格式和output格式)                                                                          |     |          |
+| 实验一 | 测试Mask2Former各模块之间的数据传递格式(例如Backbone的input格式和output格式)                                                                          | 已完成 | 25/03/13 |
 | 实验二 | 准备小规模实验数据集，作为对照实验(使用指定seed训练)，训练标准Mask2Former模型，并得到validation数据                                                                 | 已完成 | 24/12/19 |
 | 实验三 | 继承标准模型使用的Config类、Backbone(Swin)类、Pixel decoder类、Transformer类，使用上述seed进行训练，验证得出的validation数据是否一致                                 | 已完成 | 24/12/20 |
 | 实验四 | 扩展深度数据输入流：改造数据集配置文件(.json)、load_dataset策略、augment_and_transform、CustomMask2FormerForUniversalSegmentation.forward中的pixel_calues | 已完成 | 25/03/13 |
+| 实验五 | 扩展Mask2FormerPixelLevelModule中的backbone(encoder),实现颜色数据和深度数据的分立特征提取、特征融合                                                        |     | 25_03_13 |
 
 ## 实验路径
 ``` 
@@ -29,11 +30,37 @@
 ---
 
 ## 实验记录
-### 实验一
+### 实验一(测试Mask2Former各模块之间的数据传递格式)
+#### backbone(encoder)
+|      input       |                                      output                                       |
+|:----------------:|:---------------------------------------------------------------------------------:|
+| (1, 6, 256, 256) | ((1, 96, 64, 64),<br/>(1, 192, 32, 32),<br/>(1, 384, 16, 16),<br/>(1, 768, 8, 8)) |
 
+- backbone input
+![backbone_input](../../../log/25_03_13/backbone_input.png)
+- backbone output
+![backbone_output](../../../log/25_03_13/backbone_output.png)
+
+#### pixel decoder
+|                                       input                                       |                                       output                                       |
+|:---------------------------------------------------------------------------------:|:----------------------------------------------------------------------------------:|
+| ((1, 96, 64, 64),<br/>(1, 192, 32, 32),<br/>(1, 384, 16, 16),<br/>(1, 768, 8, 8)) | ((1, 256, 8, 8),<br/>(1, 256, 16, 16),<br/>(1, 256, 32, 32),<br/>(1, 256, 64, 64)) |
+
+- pixel decoder input
+![pixel_decoder_input](../../../log/25_03_13/pixel_decoder_input.png)
+- pixel decoder output
+![pixel_decoder_output](../../../log/25_03_13/pixel_decoder_output.png)
+
+#### transformer decoder
+|                                        input                                       |
+|:----------------------------------------------------------------------------------:|
+| ((1, 256, 8, 8),<br/>(1, 256, 16, 16),<br/>(1, 256, 32, 32),<br/>(1, 256, 64, 64)) |
+
+- transformer decoder input
+![transofrmer_decoder_input](../../../log/25_03_13/transformer_input.png)
 ---
 
-### 实验二
+### 实验二(固定seed对照试验)
 
 #### test metrics
 
@@ -66,7 +93,7 @@
 
 ---
 
-### 实验三
+### 实验三(继承模型核心逻辑class)
 #### Mask2Former 代码结构解析(UML 类图)
 ![Mask2Former UML 类图](Mask2FormerArchitecture.png)
 #### finetuning 结构优化&整理
@@ -148,7 +175,7 @@ class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
 
 ---
 
-### 实验四
+### 实验四(扩展深度数据输入流)
 #### 扩展深度数据输入流的方法
 
 - 在数据集的配置文件中，image字段使用list记录多张输入图像路径（颜色图像数据、深度图像数据）
@@ -243,3 +270,7 @@ class CustomMask2FormerForUniversalSegmentation(Mask2FormerForUniversalSegmentat
 
 #### 结论
 对于相同的数据集，做出上述代码层面的调整后，训练及验证结果保持不变
+
+---
+
+### 实验五
