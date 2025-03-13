@@ -3,7 +3,7 @@ import os
 
 
 def main():
-    root_path = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/mask2former/experiments/tiny_datasets"
+    root_path = "dataset/local/experiment_tiny_set/"
     train_image_name_list = get_image_name_list(os.path.join(root_path, "train/images"))
     train_mask_name_list = get_image_name_list(os.path.join(root_path, "train/mask"))
     valid_image_name_list = get_image_name_list(os.path.join(root_path, "valid/images"))

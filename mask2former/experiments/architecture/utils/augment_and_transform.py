@@ -30,6 +30,7 @@ def augment_and_transform_batch(
 
 def augment_and_transform(example, transform, image_processor):
     image = np.array(example["image"])
+    image = image.transpose(1, 2, 0, 3).reshape(image.shape[1], image.shape[2], -1)
     semantic_and_instance_masks = np.array(example["annotation"])[..., :2]
     output = transform(image=image, mask=semantic_and_instance_masks)
     aug_image = output["image"]
@@ -43,13 +44,15 @@ def augment_and_transform(example, transform, image_processor):
     }
 
     model_inputs = image_processor(
-        images=[aug_image],
-        segmentation_maps=[aug_instance_mask],
+        images=[aug_image[..., :3], aug_image[..., 3:6]],
+        segmentation_maps=[aug_instance_mask, aug_instance_mask],
         instance_id_to_semantic_id=instance_id_to_semantic_id,
         return_tensors="pt",
     )
 
-    example["pixel_values"] = model_inputs.pixel_values[0].tolist()
+    image = model_inputs.pixel_values
+    example["pixel_values"] = image.reshape(-1, image.shape[2], image.shape[3]).tolist()
+    # example["pixel_values"] = model_inputs.pixel_values[0].tolist()
     example["mask_labels"] = model_inputs.mask_labels[0].tolist()
     example["class_labels"] = model_inputs.class_labels[0]
 
