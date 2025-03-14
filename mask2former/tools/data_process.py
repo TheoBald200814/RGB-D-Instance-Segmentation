@@ -351,7 +351,7 @@ def get_label2id(json_path):
     return label2id
 
 
-def split2train_and_valid(image_path_list, mask_path_list, valid_rate=0):
+def split2train_and_valid(image_path_list, mask_path_list, depth_path_list=None, valid_rate=0.3):
     """
     按照比例将数据集划分为训练集和验证集
     :param image_path_list: image_path_list
@@ -366,11 +366,16 @@ def split2train_and_valid(image_path_list, mask_path_list, valid_rate=0):
     valid_image_path_list = image_path_list[train_size:]
     valid_mask_path_list = mask_path_list[train_size:]
 
-    return train_image_path_list, train_mask_path_list, valid_image_path_list, valid_mask_path_list
+    if depth_path_list is not None:
+        train_depth_path_list = depth_path_list[:train_size]
+        valid_depth_path_list = depth_path_list[train_size:]
+        return train_image_path_list, train_mask_path_list, train_depth_path_list, valid_image_path_list, valid_mask_path_list, valid_depth_path_list
+    else:
+        return train_image_path_list, train_mask_path_list, None, valid_image_path_list, valid_mask_path_list, None
 
 
-def generate_meta_file(train_image_path_list, train_mask_path_list,
-                       valid_image_path_list, valid_mask_path_list,
+def generate_meta_file(train_image_path_list, train_mask_path_list, train_depth_path_list,
+                       valid_image_path_list, valid_mask_path_list, valid_depth_path_list,
                        output_dir,
                        semantic_class_to_id=None):
     """
@@ -385,7 +390,7 @@ def generate_meta_file(train_image_path_list, train_mask_path_list,
     if semantic_class_to_id is None:
         semantic_class_to_id = {"background": 0, "organ": 1, "shrimp": 2}
 
-    def meta_data_unit(image_path_list, mask_path_list):
+    def single_meta_data_unit(image_path_list, mask_path_list):
         data = []
         for i in range(len(image_path_list)):
             data.append({
@@ -396,8 +401,23 @@ def generate_meta_file(train_image_path_list, train_mask_path_list,
 
         return data
 
-    train_data = meta_data_unit(train_image_path_list, train_mask_path_list)
-    valid_data = meta_data_unit(valid_image_path_list, valid_mask_path_list)
+    def multi_meta_data_unit(image_path_list, mask_path_list, depth_path_list):
+        data = []
+        for i in range(len(image_path_list)):
+            data.append({
+                "image": [image_path_list[i], depth_path_list[i]],
+                "annotation": mask_path_list[i],
+                "semantic_class_to_id": semantic_class_to_id
+            })
+
+        return data
+
+    if train_depth_path_list is None or valid_depth_path_list is None:
+        train_data = single_meta_data_unit(train_image_path_list, train_mask_path_list)
+        valid_data = single_meta_data_unit(valid_image_path_list, valid_mask_path_list)
+    else:
+        train_data = multi_meta_data_unit(train_image_path_list, train_mask_path_list, train_depth_path_list)
+        valid_data = multi_meta_data_unit(valid_image_path_list, valid_mask_path_list, valid_depth_path_list)
 
     # Write JSON files
     train_json_path = os.path.join(output_dir, "train.json")
@@ -534,7 +554,7 @@ def generate_combined_masks(
         Image.fromarray(combined).save(output_path)
 
 
-def dataset_constructor(image_dir, mask_dir, output_dir, mask_check=True, data_form='cvat', semantic_dir=None, instance_dir=None, coco_json_path=None):
+def dataset_constructor(image_dir, mask_dir, output_dir, mask_check=True, data_form='cvat', semantic_dir=None, instance_dir=None, coco_json_path=None, depth_dir=None):
     assert os.path.isdir(image_dir), f"{image_dir} 不存在"
     assert os.path.isdir(mask_dir), f"{mask_dir} 不存在"
     assert os.path.isdir(output_dir), f"{output_dir} 不存在"
@@ -564,25 +584,43 @@ def dataset_constructor(image_dir, mask_dir, output_dir, mask_check=True, data_f
 
     mask_path_list = [os.path.join(mask_dir, mask_name) for mask_name in get_image_name_list(mask_dir)]
     image_path_list = [os.path.join(image_dir, image_name) for image_name in get_image_name_list(image_dir)]
+    depth_path_list = None
     assert all(os.path.splitext(os.path.basename(image_path))[0] == os.path.splitext(os.path.basename(mask_path))[0]
                for image_path, mask_path in zip(image_path_list, mask_path_list)), "image 和 mask 不匹配"
+    if depth_dir is not None:
+        depth_path_list = [os.path.join(depth_dir, image_name) for image_name in get_image_name_list(image_dir)]
+        assert all(os.path.splitext(os.path.basename(image_path))[0] == os.path.splitext(os.path.basename(depth_path))[0]
+                   for image_path, depth_path in zip(image_path_list, depth_path_list)), "image和depth 不匹配"
+
     if mask_check:
         label_check(image_path_list, mask_path_list)
 
-    train_image_path_list, train_mask_path_list, valid_image_path_list, valid_mask_path_list = split2train_and_valid(
-        image_path_list, mask_path_list)
-    generate_meta_file(train_image_path_list, train_mask_path_list, valid_image_path_list, valid_mask_path_list,
+    train_image_path_list, train_mask_path_list, train_depth_path_list, valid_image_path_list, valid_mask_path_list, valid_depth_path_list = split2train_and_valid(
+        image_path_list, mask_path_list, depth_path_list)
+    generate_meta_file(train_image_path_list, train_mask_path_list, train_depth_path_list,
+                       valid_image_path_list, valid_mask_path_list, valid_depth_path_list,
                        output_dir)
 
 
 def main():
-    image_dir = "shrimpDetection/dataset/local/25_02_27_depth/DepthImageDatasets/valid"
-    semantic_dir = "/dataset/local/backup/test/cvat/semantic"
-    instance_dir = "/dataset/local/backup/test/cvat/instance"
-    mask_dir = "shrimpDetection/dataset/local/25_02_27_depth/valid/mask"
-    output_dir = "shrimpDetection/dataset/local/25_02_27_depth/valid"
-    coco_json_path = "shrimpDetection/dataset/local/25_02_27_depth/DepthImageDatasets/_annotations.coco.json"
-    dataset_constructor(image_dir, mask_dir, output_dir, mask_check=True, data_form='coco', semantic_dir=semantic_dir, instance_dir=instance_dir, coco_json_path=coco_json_path)
+    image_dir = "dataset/local/coco82/color"
+    output_dir = "dataset/local/coco82"
+    coco_json_path = "dataset/local/coco82/_annotations.coco.json"
+    depth_dir = "dataset/local/processed_realsense/ahe_depth/png"
+    mask_dir = "dataset/local/coco82/mask"
+
+    semantic_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/backup/test/cvat/semantic"
+    instance_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/backup/test/cvat/instance"
+
+
+
+    dataset_constructor(image_dir, mask_dir, output_dir,
+                        mask_check=False,
+                        data_form='coco',
+                        semantic_dir=semantic_dir,
+                        instance_dir=instance_dir,
+                        coco_json_path=coco_json_path,
+                        depth_dir=depth_dir)
 
 
 if __name__ == '__main__':
