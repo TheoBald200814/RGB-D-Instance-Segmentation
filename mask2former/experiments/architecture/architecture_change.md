@@ -10,13 +10,13 @@
 - 基于虾类图像数据，学习虾及其脏器图像区域特征，执行较为精确的实例分割任务。
 
 ## 实验清单
-| 编号  | 内容                                                                                                                              | 状态  |    日期    |
-|:---:|---------------------------------------------------------------------------------------------------------------------------------|-----|:--------:|
-| 实验一 | 测试Mask2Former各模块之间的数据传递格式(例如Backbone的input格式和output格式)                                                                          | 已完成 | 25/03/13 |
-| 实验二 | 准备小规模实验数据集，作为对照实验(使用指定seed训练)，训练标准Mask2Former模型，并得到validation数据                                                                 | 已完成 | 24/12/19 |
-| 实验三 | 继承标准模型使用的Config类、Backbone(Swin)类、Pixel decoder类、Transformer类，使用上述seed进行训练，验证得出的validation数据是否一致                                 | 已完成 | 24/12/20 |
+| 编号  | 内容                                                                                                                             | 状态  |    日期    |
+|:---:|--------------------------------------------------------------------------------------------------------------------------------|-----|:--------:|
+| 实验一 | 测试Mask2Former各模块之间的数据传递格式(例如Backbone的input格式和output格式)                                                                         | 已完成 | 25/03/13 |
+| 实验二 | 准备小规模实验数据集，作为对照实验(使用指定seed训练)，训练标准Mask2Former模型，并得到validation数据                                                                | 已完成 | 24/12/19 |
+| 实验三 | 继承标准模型使用的Config类、Backbone(Swin)类、Pixel decoder类、Transformer类，使用上述seed进行训练，验证得出的validation数据是否一致                                | 已完成 | 24/12/20 |
 | 实验四 | 扩展深度数据输入流：改造数据集配置文件(.json)、load_dataset策略、augment_and_transform、CustomMask2FormerForUniversalSegmentation.forward中的pixel_calues | 已完成 | 25/03/13 |
-| 实验五 | 扩展Mask2FormerPixelLevelModule中的backbone(encoder),实现颜色数据和深度数据的分立特征提取、特征融合                                                        |     | 25_03_13 |
+| 实验五 | 扩展Mask2FormerPixelLevelModule中的backbone(encoder),实现颜色数据和深度数据的分立特征提取、特征融合                                                       | 已完成 | 25_03_14 |
 
 ## 实验路径
 ``` 
@@ -273,4 +273,55 @@ class CustomMask2FormerForUniversalSegmentation(Mask2FormerForUniversalSegmentat
 
 ---
 
-### 实验五
+### 实验五(backbone特征融合实验)
+#### 实验架构设计
+![实验架构设计图](../../../log/25_03_14/exp5.png)
+- 更新CustomMask2FormerPixelLevelModule：```self.color_encoder``` ```self.depth_encoder``` 和 ```self.feature_fuser```。
+```python
+   def __init__(self, config):
+        print("[CustomMask2FormerPixelLevelModule] constructing...")
+        super().__init__(config)
+
+        self.color_encoder = load_backbone(config)
+        self.depth_encoder = load_backbone(config)
+        self.feature_fuser = FeatureFuser()
+```
+
+- 新增FeatureFuser
+```python
+merged_map = [torch.cat([c, d], dim=1) for c, d in zip(color_feature_map, depth_feature_map)]
+fused_map = [conv(m) for conv, m in zip(self.fuse_conv, merged_map)]
+```
+#### 模型训练测试
+| 指标 | 原生backbone | 双重backbone(仅初始化，未参与数据流) | 双重backbone(参与数据流) |
+|:--:|:----------:|:-----------------------:|:-----------------:|
+ |          epoch           |    1.0     |           1.0           |       10.0        |
+  |        test_loss         |  23.9534   |         26.9443         |      25.1690      |
+  |         test_map         |   0.3795   |         0.3688          |      0.1623       |
+  |       test_map_50        |   0.5136   |         0.5115          |      0.5321       |
+  |       test_map_75        |   0.5136   |         0.5115          |      0.1782       |
+  |   test_map_background    |    -1.0    |          -1.0           |       -1.0        |
+  |      test_map_large      |    -1.0    |          -1.0           |       -1.0        |
+  |     test_map_medium      |   0.4899   |         0.4156          |      0.2487       |
+  |      test_map_organ      |   0.3795   |         0.3688          |      0.1623       |
+  |      test_map_small      |   0.0229   |         0.7333          |      0.1857       |
+  |        test_mar_1        |    0.4     |          0.525          |        0.2        |
+  |       test_mar_10        |   0.575    |          0.55           |       0.375       |
+  |       test_mar_100       |    0.6     |          0.775          |       0.425       |
+  | test_mar_100_backgr ound |    -1.0    |          -1.0           |       -1.0        |
+  |    test_mar_100_organ    |    0.6     |          0.775          |       0.425       |
+  |      test_mar_large      |    -1.0    |          -1.0           |       -1.0        |
+  |     test_mar_medium      |   0.5333   |         0.7667          |      0.3333       |
+  |      test_mar_small      |    0.8     |           0.8           |        0.7        |
+  |       test_runtime       | 0:00:03.81 |       0:00:03.78        |    0:00:04.50     |
+  | test_samples_per_second  |   0.788    |          0.794          |       0.652       |
+  |  test_steps_per_second   |   0.263    |          0.265          |       0.652       |
+
+#### 结论
+在架构调整及新增模块注入后，数据流通正常，但模型性能指标有所下降。
+可能的原因：
+- 新增的模块为初始化参数，未经过预训练
+- 输入的图像数据中，深度数据通道和彩色数据通道均为彩色数据；并为使用真正的深度数据
+- 双backbone的融合机制过于粗暴（简单的卷积合并），待调整及优化
+
+---

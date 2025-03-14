@@ -1,0 +1,23 @@
+{
+    "epoch": 1.0,
+    "test_loss": 23.953393936157227,
+    "test_map": 0.3795,
+    "test_map_50": 0.5136,
+    "test_map_75": 0.5136,
+    "test_map_background": -1.0,
+    "test_map_large": -1.0,
+    "test_map_medium": 0.4899,
+    "test_map_organ": 0.3795,
+    "test_map_small": 0.0229,
+    "test_mar_1": 0.4,
+    "test_mar_10": 0.575,
+    "test_mar_100": 0.6,
+    "test_mar_100_background": -1.0,
+    "test_mar_100_organ": 0.6,
+    "test_mar_large": -1.0,
+    "test_mar_medium": 0.5333,
+    "test_mar_small": 0.8,
+    "test_runtime": 3.8054,
+    "test_samples_per_second": 0.788,
+    "test_steps_per_second": 0.263
+}
