@@ -602,6 +602,109 @@ def dataset_constructor(image_dir, mask_dir, output_dir, mask_check=True, data_f
                        output_dir)
 
 
+def calculate_depth_histogram(depth_map, bins=512, value_range=None):
+    """
+    计算深度图的直方图。
+
+    Args:
+        depth_map (numpy.ndarray): 输入深度图 (单通道).
+        bins (int): 直方图的柱子数量 (bins). 默认 256.
+        value_range (tuple, optional): 深度值的范围 (min, max).
+                                      如果不指定，则使用深度图中的最小值和最大值. Defaults to None.
+
+    Returns:
+        tuple: 包含直方图计数 (hist) 和 bin 边缘 (bin_edges).
+    """
+    if value_range is None:
+        value_range = (np.nanmin(depth_map), np.nanmax(depth_map)) # 忽略 NaN 值
+
+    hist, bin_edges = np.histogram(depth_map.flatten(), bins=bins, range=value_range, density=False)
+    return hist, bin_edges
+
+
+def select_depth_distribution_modes(hist, bin_edges, num_modes=3, prominence_threshold=0.01):
+    """
+    从深度直方图中选择深度分布模式 (峰值).
+
+    Args:
+        hist (numpy.ndarray): 直方图计数.
+        bin_edges (numpy.ndarray): bin 边缘.
+        num_modes (int): 要选择的深度分布模式的数量. 默认 3.
+        prominence_threshold (float): 峰值的显著性阈值 (相对于最大峰值高度).
+                                     用于过滤不显著的峰值. 默认 0.01.
+
+    Returns:
+        list: 包含选定深度分布模式的中心值 (近似).
+              如果找不到足够的显著峰值，则返回少于 num_modes 的列表.
+    """
+    from scipy.signal import find_peaks
+
+    # 查找峰值索引
+    peaks_indices, _ = find_peaks(hist, prominence=prominence_threshold * np.max(hist)) # 使用显著性阈值
+
+    if not peaks_indices.size: # 如果没有找到峰值
+        return []
+
+    # 获取峰值的高度和位置 (近似中心值)
+    peak_heights = hist[peaks_indices]
+    peak_centers = bin_edges[:-1][peaks_indices] + np.diff(bin_edges)[peaks_indices] / 2.0 # 近似中心值
+
+    # 将峰值按照高度降序排序
+    peak_data = sorted(zip(peak_heights, peak_centers), reverse=True)
+
+    selected_modes = [center for _, center in peak_data[:num_modes]] # 选择前 num_modes 个峰值中心
+
+    return selected_modes
+
+
+def define_depth_interval_windows(depth_modes, window_size_ratio=0.1):
+    """
+    根据深度分布模式定义深度区间窗口.
+
+    Args:
+        depth_modes (list): 深度分布模式的中心值列表.
+        window_size_ratio (float): 窗口大小相对于深度模式中心值的比例. 默认 0.1.
+                                   例如，ratio=0.1，则窗口宽度为中心值的 10%.
+
+    Returns:
+        list: 包含深度区间窗口 (元组 (lower_bound, upper_bound)) 的列表.
+    """
+    interval_windows = []
+    for mode_center in depth_modes:
+        window_half_width = mode_center * window_size_ratio / 2.0  # 半宽度，保证窗口宽度与中心值比例一致
+        lower_bound = max(0, mode_center - window_half_width) # 保证下界不小于0，假设深度值非负
+        upper_bound = mode_center + window_half_width
+        interval_windows.append((lower_bound, upper_bound))
+    return interval_windows
+
+
+def generate_depth_region_masks(depth_map, interval_windows):
+    """
+    根据深度区间窗口生成深度区域掩码.
+
+    Args:
+        depth_map (numpy.ndarray): 输入深度图 (单通道).
+        interval_windows (list): 深度区间窗口列表，每个窗口为元组 (lower_bound, upper_bound).
+
+    Returns:
+        list: 包含深度区域掩码 (numpy.ndarray, bool 类型) 的列表.
+              最后一个掩码是剩余区域掩码.
+    """
+    region_masks = []
+    combined_mask = np.zeros_like(depth_map, dtype=bool) # 用于记录已覆盖的区域
+
+    for lower_bound, upper_bound in interval_windows:
+        mask = (depth_map >= lower_bound) & (depth_map <= upper_bound)
+        region_masks.append(mask)
+        combined_mask |= mask # 累积覆盖区域
+
+    # 生成剩余区域掩码 (深度值不在任何定义的窗口内的区域)
+    remaining_mask = ~combined_mask
+    region_masks.append(remaining_mask)
+
+    return region_masks
+
+
 def main():
     image_dir = "dataset/local/coco82/color"
     output_dir = "dataset/local/coco82"
