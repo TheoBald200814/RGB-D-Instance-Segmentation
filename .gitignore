@@ -14,3 +14,9 @@
 *.jpg
 
 *.png
+
+dataset/
+
+semantic_seg/
+
+__pycache__/
