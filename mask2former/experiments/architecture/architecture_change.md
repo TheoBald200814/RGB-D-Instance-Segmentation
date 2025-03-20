@@ -276,6 +276,7 @@ class CustomMask2FormerForUniversalSegmentation(Mask2FormerForUniversalSegmentat
 ### 实验五(backbone特征融合实验)
 #### 实验架构设计
 ![实验架构设计图](../../../log/25_03_14/exp5.png)
+![实验架构设计图](../../../log/25_03_14/featurefuser.png)
 - 更新CustomMask2FormerPixelLevelModule：```self.color_encoder``` ```self.depth_encoder``` 和 ```self.feature_fuser```。
 ```python
    def __init__(self, config):
