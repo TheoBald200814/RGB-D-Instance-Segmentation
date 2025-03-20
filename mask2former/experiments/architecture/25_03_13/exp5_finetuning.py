@@ -32,7 +32,7 @@ from torch import Tensor
 from transformers.models.mask2former.modeling_mask2former import Mask2FormerModel, Mask2FormerPixelLevelModule, \
     Mask2FormerForUniversalSegmentationOutput, Mask2FormerPixelLevelModuleOutput
 
-from mask2former.tools.data_process import get_label2id
+from mask2former.utils.data_process import get_label2id
 from datasets import load_dataset, Image
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
@@ -44,11 +44,11 @@ from transformers import (
 )
 from transformers import Mask2FormerForUniversalSegmentation
 
-from mask2former.experiments.architecture.utils.arguments import Arguments
-from mask2former.experiments.architecture.utils.augment_and_transform import augment_and_transform, augment_and_transform_batch, collate_fn
-from mask2former.experiments.architecture.utils.model_essential_part import find_last_checkpoint, Evaluator
-from mask2former.experiments.architecture.utils.log import setup_logging
-from mask2former.experiments.architecture.utils.custom_model import CustomMask2FormerForUniversalSegmentation
+from mask2former.utils.arguments import Arguments
+from mask2former.utils.augment_and_transform import augment_and_transform, augment_and_transform_batch, collate_fn
+from mask2former.utils.model_essential_part import find_last_checkpoint, Evaluator
+from mask2former.utils.log import setup_logging
+from mask2former.utils.custom_model import CustomMask2FormerForUniversalSegmentation
 
 logger = logging.getLogger(__name__)
 

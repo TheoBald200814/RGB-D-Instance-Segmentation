@@ -506,7 +506,7 @@ def generate_combined_masks(
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    for img_id, img_info in images.items():
+    for img_id, img_info in tqdm(images.items()):
         # 获取图像尺寸
         img_path = os.path.join(image_dir, img_info['file_name'])
         if os.path.exists(img_path):
