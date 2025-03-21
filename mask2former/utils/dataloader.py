@@ -15,24 +15,18 @@ from transformers import (
 
 
 def dataloader(args, image_processor):
+    label2id = get_label2id(os.path.join(args.root_path, args.label2id_path))
+    if args.do_reduce_labels:
+        label2id = {name: idx for name, idx in label2id.items() if idx != 0}  # remove background class
+        label2id = {name: idx - 1 for name, idx in label2id.items()}  # shift class indices by -1
+    id2label = {v: k for k, v in label2id.items()}
+
     data_files = {
         "train": os.path.join(args.root_path, args.train_json_path),
         "validation": os.path.join(args.root_path, args.valid_json_path),
     }
     dataset = load_dataset("json", data_files=data_files)
-    if args.rgb_d:  # RGB-D
-        dataset = dataset.cast_column("image", [IMG()])
-    else:  # RGB only
-        dataset = dataset.cast_column("image", IMG())
     dataset = dataset.cast_column("annotation", IMG())
-    label2id = get_label2id(os.path.join(args.root_path, args.label2id_path))
-
-    if args.do_reduce_labels:
-        label2id = {name: idx for name, idx in label2id.items() if idx != 0}  # remove background class
-        label2id = {name: idx - 1 for name, idx in label2id.items()}  # shift class indices by -1
-
-    id2label = {v: k for k, v in label2id.items()}
-
     train_augment_and_transform = A.Compose(
         [
             # A.HorizontalFlip(p=0.5),
@@ -44,11 +38,20 @@ def dataloader(args, image_processor):
     validation_transform = A.Compose(
         [A.NoOp()],
     )
-    transform_single = partial(
-        augment_and_transform, transform=train_augment_and_transform, image_processor=image_processor
-    )
-    dataset["train"] = dataset["train"].map(transform_single)
-    dataset["validation"] = dataset["validation"].map(transform_single)
+    if args.rgb_d:  # RGB-D
+        dataset = dataset.cast_column("image", [IMG()])
+        transform_rgbd = partial(
+            rgbd_aug_and_trans, transform=train_augment_and_transform, image_processor=image_processor
+        )
+        dataset["train"] = dataset["train"].map(transform_rgbd)
+        dataset["validation"] = dataset["validation"].map(transform_rgbd)
+    else:  # RGB only
+        transform_rgb = partial(
+            rgb_aug_and_trans, transform=train_augment_and_transform, image_processor=image_processor
+        )
+        dataset = dataset.cast_column("image", IMG())
+        dataset["train"] = dataset["train"].map(transform_rgb)
+        dataset["validation"] = dataset["validation"].map(transform_rgb)
 
     return dataset, label2id, id2label
 
@@ -73,10 +76,42 @@ def augment_and_transform_batch(
 
     return batch
 
-
-def augment_and_transform(example, transform, image_processor):
+def rgb_aug_and_trans(example, transform, image_processor):
     # Resize image
     size = (256, 256)
+    example["image"] = example["image"].resize(size, Image.BILINEAR)
+    example["annotation"] = example["annotation"].resize(size, Image.NEAREST)
+    semantic_and_instance_masks = np.array(example["annotation"])[..., :2]
+    image = np.array(example["image"])
+    output = transform(image=image, mask=semantic_and_instance_masks)
+    aug_image = output["image"]
+    aug_semantic_and_instance_masks = output["mask"]
+    aug_instance_mask = aug_semantic_and_instance_masks[..., 1]
+
+    # Create mapping from instance id to semantic id
+    unique_semantic_id_instance_id_pairs = np.unique(aug_semantic_and_instance_masks.reshape(-1, 2), axis=0)
+    instance_id_to_semantic_id = {
+        instance_id: semantic_id for semantic_id, instance_id in unique_semantic_id_instance_id_pairs
+    }
+
+    model_inputs = image_processor(
+        images=[aug_image],
+        segmentation_maps=[aug_instance_mask],
+        instance_id_to_semantic_id=instance_id_to_semantic_id,
+        return_tensors="pt",
+    )
+
+    example["pixel_values"] = model_inputs.pixel_values[0].tolist()
+    example["mask_labels"] = model_inputs.mask_labels[0].tolist()
+    example["class_labels"] = model_inputs.class_labels[0]
+
+    return example
+
+
+def rgbd_aug_and_trans(example, transform, image_processor):
+    # Resize image
+    size = (256, 256)
+    assert len(example["image"]) >= 2, "the dataset not include multi-modal image, but the param of rgb_d in config.json was True"
     example["image"] = [example["image"][0], example["image"][1].convert('RGB')]
     example["image"] = [image.resize(size, Image.BILINEAR) for image in example["image"]]
     # Resize annotation (use NEAREST to preserve label values)
@@ -105,7 +140,6 @@ def augment_and_transform(example, transform, image_processor):
 
     image = model_inputs.pixel_values
     example["pixel_values"] = image.reshape(-1, image.shape[2], image.shape[3]).tolist()
-    # example["pixel_values"] = model_inputs.pixel_values[0].tolist()
     example["mask_labels"] = model_inputs.mask_labels[0].tolist()
     example["class_labels"] = model_inputs.class_labels[0]
 

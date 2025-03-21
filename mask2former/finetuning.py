@@ -86,7 +86,8 @@ def main():
         args.model_name_or_path,
         label2id=label2id,
         id2label=id2label,
-        ignore_mismatched_sizes=True
+        ignore_mismatched_sizes=True,
+        rgb_d=args.rgb_d
     )
 
     # Load evaluator

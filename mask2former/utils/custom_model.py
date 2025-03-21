@@ -32,41 +32,45 @@ class CustomConfig(Mask2FormerConfig):
 
 class CustomMask2FormerModel(Mask2FormerModel):
     main_input_name = "pixel_values"
-    def __init__(self, config):
+    def __init__(self, config, rgb_d=False):
         print("[CustomMask2FormerModel] constructing...")
         super().__init__(config)
-        self.pixel_level_module = CustomMask2FormerPixelLevelModule(config)
+        self.pixel_level_module = CustomMask2FormerPixelLevelModule(config, rgb_d=rgb_d)
 
 
 class CustomMask2FormerForUniversalSegmentation(Mask2FormerForUniversalSegmentation):
     main_input_name = "pixel_values"
     config_class = CustomConfig
 
-    def __init__(self, config):
+    def __init__(self, config, rgb_d=False):
         print("[CustomMask2FormerForUniversalSegmentation] constructing...")
         super().__init__(config)
         set_seed(42)
-        self.model = CustomMask2FormerModel(config)
+        self.model = CustomMask2FormerModel(config, rgb_d=rgb_d)
 
 
 class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
     main_input_name = "pixel_values"
-    def __init__(self, config):
+    def __init__(self, config, rgb_d=False):
         print("[CustomMask2FormerPixelLevelModule] constructing...")
         super().__init__(config)
-
+        self.rgb_d = rgb_d
+        print(f"[CustomMask2FormerPixelLevelModule] rgb_d={self.rgb_d}")
+        if self.rgb_d: # RGB-D
+            self.depth_encoder = load_backbone(config)
+            self.feature_fuser = FeatureFuser()
         self.color_encoder = load_backbone(config)
-        self.depth_encoder = load_backbone(config)
-        self.feature_fuser = FeatureFuser()
 
     def forward(self, pixel_values: Tensor, output_hidden_states: bool = False) -> Mask2FormerPixelLevelModuleOutput:
-        color_pixel_values = pixel_values[:, :3, :, :]
-        depth_pixel_values = pixel_values[:, 3:6, :, :]
-        color_feature_map = self.color_encoder(color_pixel_values).feature_maps
-        depth_feature_map = self.depth_encoder(depth_pixel_values).feature_maps
-        backbone_features = self.feature_fuser(color_feature_map, depth_feature_map)
+        if self.rgb_d: # RGB-D
+            color_pixel_values = pixel_values[:, :3, :, :]
+            depth_pixel_values = pixel_values[:, 3:6, :, :]
+            color_feature_map = self.color_encoder(color_pixel_values).feature_maps
+            depth_feature_map = self.depth_encoder(depth_pixel_values).feature_maps
+            backbone_features = self.feature_fuser(color_feature_map, depth_feature_map)
+        else: # RGB only
+            backbone_features = self.color_encoder(pixel_values).feature_maps
 
-        # backbone_features = self.encoder(color_pixel_values).feature_maps
         decoder_output = self.decoder(backbone_features, output_hidden_states=output_hidden_states)
 
         return Mask2FormerPixelLevelModuleOutput(
