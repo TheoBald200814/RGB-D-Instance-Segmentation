@@ -47,13 +47,8 @@ def dataloader(args, image_processor):
     transform_single = partial(
         augment_and_transform, transform=train_augment_and_transform, image_processor=image_processor
     )
-    transform_batch = partial(
-        augment_and_transform_batch, image_processor=image_processor
-    )
     dataset["train"] = dataset["train"].map(transform_single)
     dataset["validation"] = dataset["validation"].map(transform_single)
-    dataset["train"] = dataset["train"].with_transform(transform_batch)
-    dataset["validation"] = dataset["validation"].with_transform(transform_batch)
 
     return dataset, label2id, id2label
 
@@ -122,6 +117,22 @@ def collate_fn(examples):
     batch["pixel_values"] = torch.stack([example["pixel_values"] for example in examples])
     batch["class_labels"] = [example["class_labels"] for example in examples]
     batch["mask_labels"] = [example["mask_labels"] for example in examples]
+    if "pixel_mask" in examples[0]:
+        batch["pixel_mask"] = torch.stack([example["pixel_mask"] for example in examples])
+    return batch
+
+
+def collate_fn_v2(examples): # 修改后的 collate_fn
+    batch = {}
+    pixel_values_list = [example["pixel_values"] for example in examples]
+    class_labels_list = [example["class_labels"] for example in examples]
+    mask_labels_list = [example["mask_labels"] for example in examples]
+
+    # 在 collate_fn 中进行 tensor 转换和 stack
+    batch["pixel_values"] = torch.stack([torch.tensor(pv) for pv in pixel_values_list])
+    batch["class_labels"] = [torch.tensor(cl) for cl in class_labels_list] # 可以选择 stack 或保持 list of tensors
+    batch["mask_labels"] = [torch.tensor(ml) for ml in mask_labels_list] # 可以选择 stack 或保持 list of tensors
+
     if "pixel_mask" in examples[0]:
         batch["pixel_mask"] = torch.stack([example["pixel_mask"] for example in examples])
     return batch

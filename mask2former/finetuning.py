@@ -23,7 +23,7 @@ from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 from transformers import AutoImageProcessor, HfArgumentParser, Trainer, TrainingArguments
 from utils.arguments import Arguments
-from utils.dataloader import collate_fn, dataloader
+from utils.dataloader import collate_fn_v2, dataloader
 from utils.model_essential_part import find_last_checkpoint, Evaluator
 from utils.log import setup_logging
 from utils.custom_model import CustomMask2FormerForUniversalSegmentation
@@ -99,7 +99,7 @@ def main():
         train_dataset=dataset["train"] if training_args.do_train else None,
         eval_dataset=dataset["validation"] if training_args.do_eval else None,
         processing_class=image_processor,
-        data_collator=collate_fn,
+        data_collator=collate_fn_v2,
         compute_metrics=compute_metrics,
     )
 
