@@ -1,11 +1,61 @@
+from functools import partial
+
 import numpy as np
 import torch
+import os
+import albumentations as A
+from datasets import load_dataset, Image as IMG
+from .data_process import get_label2id
 from PIL import Image
 from typing import Any, Dict, List, Mapping, Optional
 from transformers.image_processing_utils import BatchFeature
 from transformers import (
     AutoImageProcessor,
 )
+
+
+def dataloader(args, image_processor):
+    data_files = {
+        "train": os.path.join(args.root_path, args.train_json_path),
+        "validation": os.path.join(args.root_path, args.valid_json_path),
+    }
+    dataset = load_dataset("json", data_files=data_files)
+    if args.rgb_d:  # RGB-D
+        dataset = dataset.cast_column("image", [IMG()])
+    else:  # RGB only
+        dataset = dataset.cast_column("image", IMG())
+    dataset = dataset.cast_column("annotation", IMG())
+    label2id = get_label2id(os.path.join(args.root_path, args.label2id_path))
+
+    if args.do_reduce_labels:
+        label2id = {name: idx for name, idx in label2id.items() if idx != 0}  # remove background class
+        label2id = {name: idx - 1 for name, idx in label2id.items()}  # shift class indices by -1
+
+    id2label = {v: k for k, v in label2id.items()}
+
+    train_augment_and_transform = A.Compose(
+        [
+            # A.HorizontalFlip(p=0.5),
+            # A.RandomBrightnessContrast(p=0.5),
+            # A.HueSaturationValue(p=0.1),
+            A.NoOp()
+        ],
+    )
+    validation_transform = A.Compose(
+        [A.NoOp()],
+    )
+    transform_single = partial(
+        augment_and_transform, transform=train_augment_and_transform, image_processor=image_processor
+    )
+    transform_batch = partial(
+        augment_and_transform_batch, image_processor=image_processor
+    )
+    dataset["train"] = dataset["train"].map(transform_single)
+    dataset["validation"] = dataset["validation"].map(transform_single)
+    dataset["train"] = dataset["train"].with_transform(transform_batch)
+    dataset["validation"] = dataset["validation"].with_transform(transform_batch)
+
+    return dataset, label2id, id2label
 
 
 def augment_and_transform_batch(

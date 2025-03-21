@@ -89,3 +89,11 @@ class Arguments:
             )
         }
     )
+    rgb_d: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "input data contain rgb and depth"
+            )
+        }
+    )

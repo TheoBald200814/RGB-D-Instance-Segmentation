@@ -20,3 +20,5 @@ dataset/
 semantic_seg/
 
 __pycache__/
+
+log/

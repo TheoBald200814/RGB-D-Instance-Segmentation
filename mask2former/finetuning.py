@@ -18,51 +18,26 @@
 import logging
 import os
 import sys
-from typing import Optional, List
 
-import albumentations as A
-import numpy as np
-import torch
-import PIL.Image
-import random
-
-from functools import partial
-
-from torch import Tensor
-from transformers.models.mask2former.modeling_mask2former import Mask2FormerModel, Mask2FormerPixelLevelModule, \
-    Mask2FormerForUniversalSegmentationOutput, Mask2FormerPixelLevelModuleOutput
-
-from mask2former.utils.data_process import get_label2id
-from datasets import load_dataset, Image
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
-from transformers import (
-    AutoImageProcessor,
-    HfArgumentParser,
-    Trainer,
-    TrainingArguments, Mask2FormerConfig,
-)
-from transformers import Mask2FormerForUniversalSegmentation
-
-from mask2former.utils.arguments import Arguments
-from mask2former.utils.augment_and_transform import augment_and_transform, augment_and_transform_batch, collate_fn
-from mask2former.utils.model_essential_part import find_last_checkpoint, Evaluator
-from mask2former.utils.log import setup_logging
-from mask2former.utils.custom_model import CustomMask2FormerForUniversalSegmentation
+from transformers import AutoImageProcessor, HfArgumentParser, Trainer, TrainingArguments
+from utils.arguments import Arguments
+from utils.dataloader import collate_fn, dataloader
+from utils.model_essential_part import find_last_checkpoint, Evaluator
+from utils.log import setup_logging
+from utils.custom_model import CustomMask2FormerForUniversalSegmentation
 
 logger = logging.getLogger(__name__)
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.47.0.dev0")
-
 require_version("datasets>=2.0.0", "To fix: pip install -r examples/pytorch/instance-segmentation/requirements.txt")
 
 
 def main():
     # See all possible arguments in https://huggingface.co/docs/transformers/main_classes/trainer#transformers.TrainingArguments
     # or by passing the --help flag to this script.
-
-    # set_seed(42) # 在main函数层面显式声明seed似乎不会对训练结果产生影响
 
     parser = HfArgumentParser([Arguments, TrainingArguments])
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
@@ -92,34 +67,7 @@ def main():
     # Load last checkpoint from output_dir if it exists (and we are not overwriting it)
     checkpoint = find_last_checkpoint(training_args, logger)
 
-    # ------------------------------------------------------------------------------------------------
-    # Load dataset, prepare splits
-    # ------------------------------------------------------------------------------------------------
-    data_files = {
-        "train": os.path.join(args.root_path, args.train_json_path),
-        "validation": os.path.join(args.root_path, args.valid_json_path),
-    }
-    dataset = load_dataset("json", data_files=data_files)
-    dataset = dataset.cast_column("image", [Image()])
-    dataset = dataset.cast_column("annotation", Image())
-    label2id = get_label2id(os.path.join(args.root_path, args.label2id_path))
-
-    if args.do_reduce_labels:
-        label2id = {name: idx for name, idx in label2id.items() if idx != 0}  # remove background class
-        label2id = {name: idx - 1 for name, idx in label2id.items()}  # shift class indices by -1
-
-    id2label = {v: k for k, v in label2id.items()}
-
-    # ------------------------------------------------------------------------------------------------
-    # Load pretrained config, model and image processor
-    # ------------------------------------------------------------------------------------------------
-    model = CustomMask2FormerForUniversalSegmentation.from_pretrained(
-        args.model_name_or_path,
-        label2id=label2id,
-        id2label=id2label,
-        ignore_mismatched_sizes=True
-    )
-
+    # Load image processor
     image_processor = AutoImageProcessor.from_pretrained(
         args.model_name_or_path,
         do_resize=True,
@@ -130,38 +78,21 @@ def main():
         ignore_index=args.ignore_index,
     )
 
-    # ------------------------------------------------------------------------------------------------
-    # Define image augmentations and dataset transforms
-    # ------------------------------------------------------------------------------------------------
-    train_augment_and_transform = A.Compose(
-        [
-            # A.HorizontalFlip(p=0.5),
-            # A.RandomBrightnessContrast(p=0.5),
-            # A.HueSaturationValue(p=0.1),
-            A.NoOp()
-        ],
-    )
-    validation_transform = A.Compose(
-        [A.NoOp()],
+    # Load dataset
+    dataset, label2id, id2label = dataloader(args, image_processor)
+
+    # Load pretrained config, model
+    model = CustomMask2FormerForUniversalSegmentation.from_pretrained(
+        args.model_name_or_path,
+        label2id=label2id,
+        id2label=id2label,
+        ignore_mismatched_sizes=True
     )
 
-    transform_single = partial(
-        augment_and_transform, transform=train_augment_and_transform, image_processor=image_processor
-    )
-    transform_batch = partial(
-        augment_and_transform_batch, image_processor=image_processor
-    )
-    dataset["train"] = dataset["train"].map(transform_single)
-    dataset["validation"] = dataset["validation"].map(transform_single)
-    dataset["train"] = dataset["train"].with_transform(transform_batch)
-    dataset["validation"] = dataset["validation"].with_transform(transform_batch)
-
-    # ------------------------------------------------------------------------------------------------
-    # Model training and evaluation with Trainer API
-    # ------------------------------------------------------------------------------------------------
-
+    # Load evaluator
     compute_metrics = Evaluator(image_processor=image_processor, id2label=id2label, threshold=0.0)
 
+    # Load trainer
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -172,6 +103,9 @@ def main():
         compute_metrics=compute_metrics,
     )
 
+    # ------------------------------------------------------------------------------------------------
+    # Model training and evaluation with Trainer API
+    # ------------------------------------------------------------------------------------------------
     # Training
     if training_args.do_train:
         train_result = trainer.train(resume_from_checkpoint=checkpoint)

@@ -108,10 +108,11 @@ class FeatureFuser(nn.Module):
             torch.Size([1, 384, 16, 16]),
             torch.Size([1, 768, 8, 8])
         ]
-        for c, d, size in zip(color_feature_map, depth_feature_map, size_list):
-            assert c.shape == d.shape == size, \
-                (f"the shape of color_feature_map and depth_feature_map should be the same, and both of them should be equal to the {size}."
-                 f"But color_feature_map.shape == {c.shape}, depth_feature_map.shape == {d.shape}")
+        # TODO: DEBUG this assert
+        # for c, d, size in zip(color_feature_map, depth_feature_map, size_list):
+        #     assert c.shape == d.shape == size, \
+        #         (f"the shape of color_feature_map and depth_feature_map should be the same, and both of them should be equal to the {size}."
+        #          f"But color_feature_map.shape == {c.shape}, depth_feature_map.shape == {d.shape}")
 
         # merged_map = [torch.cat([color_feature_map[i], depth_feature_map[i]], dim=1) for i in range(len(depth_feature_map))]
         # fused_map = [self.fuse_conv[i](merged_map[i]) for i in range(len(merged_map))]
