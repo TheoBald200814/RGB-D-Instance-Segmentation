@@ -353,7 +353,7 @@ def get_label2id(json_path):
     return label2id
 
 
-def split2train_and_valid(image_path_list, mask_path_list, depth_path_list=None, valid_rate=0.3):
+def split2train_and_valid(image_path_list, mask_path_list, depth_path_list=None, depth_expand_list_dict = None, valid_rate=0.3):
     """
     按照比例将数据集划分为训练集和验证集
     :param image_path_list: image_path_list
@@ -372,12 +372,19 @@ def split2train_and_valid(image_path_list, mask_path_list, depth_path_list=None,
         train_depth_path_list = depth_path_list[:train_size]
         valid_depth_path_list = depth_path_list[train_size:]
         return train_image_path_list, train_mask_path_list, train_depth_path_list, valid_image_path_list, valid_mask_path_list, valid_depth_path_list
+    elif depth_expand_list_dict is not None:
+        train_depth_expand_list_dict = {}
+        valid_depth_expand_list_dict = {}
+        for i in depth_expand_list_dict:
+            train_depth_expand_list_dict[i] = depth_expand_list_dict[i][:train_size]
+            valid_depth_expand_list_dict[i] = depth_expand_list_dict[i][train_size:]
+        return train_image_path_list, train_mask_path_list, train_depth_expand_list_dict, valid_image_path_list, valid_mask_path_list, valid_depth_expand_list_dict
     else:
         return train_image_path_list, train_mask_path_list, None, valid_image_path_list, valid_mask_path_list, None
 
 
-def generate_meta_file(train_image_path_list, train_mask_path_list, train_depth_path_list,
-                       valid_image_path_list, valid_mask_path_list, valid_depth_path_list,
+def generate_meta_file(train_image_path_list, train_mask_path_list, train_depth_path_list, train_depth_expand_list_dict,
+                       valid_image_path_list, valid_mask_path_list, valid_depth_path_list, valid_depth_expand_list_dict,
                        output_dir,
                        semantic_class_to_id=None):
     """
@@ -414,12 +421,37 @@ def generate_meta_file(train_image_path_list, train_mask_path_list, train_depth_
 
         return data
 
-    if train_depth_path_list is None or valid_depth_path_list is None:
-        train_data = single_meta_data_unit(train_image_path_list, train_mask_path_list)
-        valid_data = single_meta_data_unit(valid_image_path_list, valid_mask_path_list)
-    else:
+    def ultra_meta_data_unit(image_path_list, mask_path_list, depth_expand_list_dict):
+        data = []
+        for i in range(len(image_path_list)):
+            data.append({
+                "image":[
+                    image_path_list[i],
+                    depth_expand_list_dict['decimation_depth'][i],
+                    depth_expand_list_dict['depth_colormap_by_rs'][i],
+                    depth_expand_list_dict['spatial_depth'][i],
+                    depth_expand_list_dict['hole_filling_depth'][i],
+                    depth_expand_list_dict['ahe_depth'][i],
+                    depth_expand_list_dict['laplace_depth'][i],
+                    depth_expand_list_dict['gaussian_depth'][i],
+                    depth_expand_list_dict['eq_depth'][i],
+                    depth_expand_list_dict['lt_depth'][i]
+                ],
+                "annotation": mask_path_list[i],
+                "semantic_class_to_id": semantic_class_to_id
+            })
+
+        return data
+
+    if train_depth_expand_list_dict is not None and valid_depth_expand_list_dict is not None: # 30 channel
+        train_data = ultra_meta_data_unit(train_image_path_list, train_mask_path_list, train_depth_expand_list_dict)
+        valid_data = ultra_meta_data_unit(valid_image_path_list, valid_mask_path_list, valid_depth_expand_list_dict)
+    elif train_depth_path_list is not None and valid_depth_path_list is not None: # 6 channel
         train_data = multi_meta_data_unit(train_image_path_list, train_mask_path_list, train_depth_path_list)
         valid_data = multi_meta_data_unit(valid_image_path_list, valid_mask_path_list, valid_depth_path_list)
+    else: # 3 channel
+        train_data = single_meta_data_unit(train_image_path_list, train_mask_path_list)
+        valid_data = single_meta_data_unit(valid_image_path_list, valid_mask_path_list)
 
     # Write JSON files
     train_json_path = os.path.join(output_dir, "train.json")
