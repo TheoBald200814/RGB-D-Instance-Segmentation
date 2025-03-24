@@ -38,14 +38,21 @@ def dataloader(args, image_processor):
     validation_transform = A.Compose(
         [A.NoOp()],
     )
-    if args.rgb_d:  # RGB-D
+    if args.rgb_d == 'multi':  # RGB-D(6 channel)
         dataset = dataset.cast_column("image", [IMG()])
         transform_rgbd = partial(
             rgbd_aug_and_trans, transform=train_augment_and_transform, image_processor=image_processor
         )
         dataset["train"] = dataset["train"].map(transform_rgbd)
         dataset["validation"] = dataset["validation"].map(transform_rgbd)
-    else:  # RGB only
+    elif args.rgb_d == 'ultra': # RGB-D(30 channel)
+        dataset = dataset.cast_column("image", [IMG()])
+        transform_rgbd_ultra = partial(
+            rgbd_ultra_aug_and_trans, transform=train_augment_and_transform, image_processor=image_processor
+        )
+        dataset["train"] = dataset["train"].map(transform_rgbd_ultra)
+        dataset["validation"] = dataset["validation"].map(transform_rgbd_ultra)
+    else:  # RGB only(3 channel)
         transform_rgb = partial(
             rgb_aug_and_trans, transform=train_augment_and_transform, image_processor=image_processor
         )
@@ -111,7 +118,7 @@ def rgb_aug_and_trans(example, transform, image_processor):
 def rgbd_aug_and_trans(example, transform, image_processor):
     # Resize image
     size = (256, 256)
-    assert len(example["image"]) >= 2, "the dataset not include multi-modal image, but the param of rgb_d in config.json was True"
+    assert len(example["image"]) >= 2, "the dataset not include multi-modal image, but the param of rgb_d in config.json was multi/ultra"
     example["image"] = [example["image"][0], example["image"][1].convert('RGB')]
     example["image"] = [image.resize(size, Image.BILINEAR) for image in example["image"]]
     # Resize annotation (use NEAREST to preserve label values)
@@ -134,6 +141,47 @@ def rgbd_aug_and_trans(example, transform, image_processor):
     model_inputs = image_processor(
         images=[aug_image[..., :3], aug_image[..., 3:6]],
         segmentation_maps=[aug_instance_mask, aug_instance_mask],
+        instance_id_to_semantic_id=instance_id_to_semantic_id,
+        return_tensors="pt",
+    )
+
+    image = model_inputs.pixel_values
+    example["pixel_values"] = image.reshape(-1, image.shape[2], image.shape[3]).tolist()
+    example["mask_labels"] = model_inputs.mask_labels[0].tolist()
+    example["class_labels"] = model_inputs.class_labels[0]
+
+    return example
+
+
+def rgbd_ultra_aug_and_trans(example, transform, image_processor):
+    # Resize image
+    size = (256, 256)
+    assert len(example["image"]) >= 2, "the dataset not include multi-modal image, but the param of rgb_d in config.json was multi/ultra"
+    # example["image"] = [example["image"][0], example["image"][1].convert('RGB')]
+    example["image"] = [i.convert('RGB') for i in example["image"]]
+    example["image"] = [image.resize(size, Image.BILINEAR) for image in example["image"]]
+    # Resize annotation (use NEAREST to preserve label values)
+    example["annotation"] = example["annotation"].resize(size, Image.NEAREST)
+
+    image = np.array(example["image"])
+    image = image.transpose(1, 2, 0, 3).reshape(image.shape[1], image.shape[2], -1)
+    semantic_and_instance_masks = np.array(example["annotation"])[..., :2]
+    output = transform(image=image, mask=semantic_and_instance_masks)
+    aug_image = output["image"]
+    aug_semantic_and_instance_masks = output["mask"]
+    aug_instance_mask = aug_semantic_and_instance_masks[..., 1]
+
+    # Create mapping from instance id to semantic id
+    unique_semantic_id_instance_id_pairs = np.unique(aug_semantic_and_instance_masks.reshape(-1, 2), axis=0)
+    instance_id_to_semantic_id = {
+        instance_id: semantic_id for semantic_id, instance_id in unique_semantic_id_instance_id_pairs
+    }
+
+    model_inputs = image_processor(
+        images=[aug_image[..., :3], aug_image[..., 3:6], aug_image[..., 6:9], aug_image[..., 9:12], aug_image[..., 12:15],
+                aug_image[..., 15:18], aug_image[..., 18:21], aug_image[..., 21:24], aug_image[..., 24:27], aug_image[..., 27:30]],
+        segmentation_maps=[aug_instance_mask, aug_instance_mask, aug_instance_mask, aug_instance_mask, aug_instance_mask,
+                           aug_instance_mask, aug_instance_mask, aug_instance_mask, aug_instance_mask, aug_instance_mask],
         instance_id_to_semantic_id=instance_id_to_semantic_id,
         return_tensors="pt",
     )

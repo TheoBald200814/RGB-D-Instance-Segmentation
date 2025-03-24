@@ -8,6 +8,8 @@ from transformers import Mask2FormerConfig, Mask2FormerModel, Mask2FormerForUniv
 from transformers.models.mask2former.modeling_mask2former import Mask2FormerPixelLevelModule, \
     Mask2FormerForUniversalSegmentationOutput, Mask2FormerPixelLevelModuleOutput
 from transformers.utils.backbone_utils import load_backbone
+from mask2former.utils.data_process import calculate_depth_histogram, select_depth_distribution_modes, \
+    define_depth_interval_windows, generate_depth_region_masks
 
 
 # 固定随机种子
@@ -63,6 +65,18 @@ class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
 
     def forward(self, pixel_values: Tensor, output_hidden_states: bool = False) -> Mask2FormerPixelLevelModuleOutput:
         if self.rgb_d: # RGB-D
+            # TODO: 数据格式扩充：(1, 6, H, W) -> (1, 30, H, W) [RGB, DECIMATION, RS, SPATIAL, HOLE_FILLING, AHE, LAPLACE, GAUSSIAN, EQ, LT]
+            rgb = pixel_values[:, 0:3, :, :]
+            decimation = pixel_values[:, 3:6, :, :]
+            rs = pixel_values[:, 6:9, :, :]
+            spatial = pixel_values[:, 9:12, :, :]
+            hole_filling = pixel_values[:, 12:15, :, :]
+            ahe = pixel_values[:, 15:18, :, :]
+            laplace = pixel_values[:, 18:21, :, :]
+            gaussian = pixel_values[:, 21:24, :, :]
+            eq = pixel_values[:, 24:27, :, :]
+            lt = pixel_values[:, 27:30, :, :]
+
             color_pixel_values = pixel_values[:, :3, :, :]
             depth_pixel_values = pixel_values[:, 3:6, :, :]
             color_feature_map = self.color_encoder(color_pixel_values).feature_maps
@@ -126,4 +140,75 @@ class FeatureFuser(nn.Module):
         return fused_map
 
 
+class DSAModule(nn.Module):
+    def __init__(self, in_channels, out_channels, num_depth_regions=3):
+        """
+        深度敏感注意力模块 (DSAM)。
 
+        Args:
+            in_channels (int): 输入 RGB 特征图的通道数.
+            out_channels (int): 输出增强 RGB 特征图的通道数.
+            num_depth_regions (int): 深度分解的区域数量 (T).  实际子分支数量为 T+1 (包含剩余区域). 默认 3.
+        """
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.num_depth_regions = num_depth_regions
+        self.conv_layers = nn.ModuleList([
+            nn.Conv2d(in_channels, out_channels, kernel_size=1) for _ in range(num_depth_regions + 1)
+        ]) # T+1 个 1x1 卷积层
+
+    def forward(self, rgb_features, depth_map):
+        """
+        DSAM 的前向传播过程.
+
+        Args:
+            rgb_features (torch.Tensor): 输入 RGB 特征图, 形状为 (B, C_in, H, W).
+            depth_map (torch.Tensor): 输入原始深度图, 形状为 (B, 1, H_d, W_d) 或 (B, H_d, W_d) 或 (H_d, W_d)  (单通道).
+                                      注意：为了代码的通用性，函数内部会处理不同形状的深度图.
+
+        Returns:
+            torch.Tensor: 增强后的 RGB 特征图, 形状为 (B, C_out, H, W).
+        """
+        # 1. 深度分解 (Depth Decomposition)
+        # 确保深度图是 NumPy 数组且为单通道 (如果输入是 Tensor，先转为 NumPy)
+        if isinstance(depth_map, torch.Tensor):
+            depth_map_np = depth_map.squeeze().cpu().detach().numpy()  # 去除通道维度，转为 NumPy, 放到 CPU
+        elif isinstance(depth_map, np.ndarray):
+            depth_map_np = depth_map.squeeze() # 确保是单通道
+        else:
+            raise TypeError("Depth map must be torch.Tensor or numpy.ndarray")
+
+        interval_windows = [] # 初始化为空列表，防止在没有检测到 depth_modes 时报错
+        region_masks = []
+
+        hist, bin_edges = calculate_depth_histogram(depth_map_np)
+        depth_modes = select_depth_distribution_modes(hist, bin_edges, num_modes=self.num_depth_regions)
+        if depth_modes: # 只有当检测到 depth_modes 时才进行后续步骤，防止空列表导致错误
+            interval_windows = define_depth_interval_windows(depth_modes)
+            region_masks = generate_depth_region_masks(depth_map_np, interval_windows)
+        else:
+            # 如果没有检测到深度模式，则创建一个全零的掩码列表，保证程序正常运行，但不进行深度引导
+            region_masks = [np.zeros_like(depth_map_np, dtype=bool)] * (self.num_depth_regions + 1)
+
+
+        # 2. 深度敏感注意力 (Depth-Sensitive Attention)
+        enhanced_features = 0
+        for i in range(len(region_masks)):
+            # 将 NumPy mask 转换为 PyTorch Tensor, 并放到与 rgb_features 相同的设备上
+            mask_tensor = torch.from_numpy(region_masks[i]).float().unsqueeze(0).unsqueeze(0).to(rgb_features.device) # (1, 1, H_d, W_d)
+            # resize mask to match rgb_features' spatial size using adaptive max pooling
+            resized_mask = nn.functional.adaptive_max_pool2d(mask_tensor, rgb_features.shape[2:]) # (1, 1, H, W)
+
+            masked_features = rgb_features * resized_mask  # 元素级乘法 (B, C_in, H, W) * (1, 1, H, W)  -> (B, C_in, H, W)
+            refined_features = self.conv_layers[i](masked_features) # 1x1 卷积 (B, C_in, H, W) -> (B, C_out, H, W)
+            enhanced_features += refined_features # 元素级求和
+
+
+        output_features = enhanced_features + rgb_features  # 残差连接
+        return output_features
+
+
+# "The features from different modalities of the same scale are always fused,
+# while features in different scales are selectively fused."
+# (来自相同尺度的不同模态特征总是被融合，而不同尺度的特征则有选择地融合)。
