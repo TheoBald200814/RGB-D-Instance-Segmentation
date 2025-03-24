@@ -10,14 +10,15 @@
 - 基于虾类图像数据，学习虾及其脏器图像区域特征，执行较为精确的实例分割任务。
 
 ## 实验清单
-|  编号  | 内容                                                                                                                             | 状态  |    日期    |
-|:----:|--------------------------------------------------------------------------------------------------------------------------------|-----|:--------:|
-| 实验一  | 测试Mask2Former各模块之间的数据传递格式(例如Backbone的input格式和output格式)                                                                         | 已完成 | 25/03/13 |
-| 实验二  | 准备小规模实验数据集，作为对照实验(使用指定seed训练)，训练标准Mask2Former模型，并得到validation数据                                                                | 已完成 | 24/12/19 |
-| 实验三  | 继承标准模型使用的Config类、Backbone(Swin)类、Pixel decoder类、Transformer类，使用上述seed进行训练，验证得出的validation数据是否一致                                | 已完成 | 24/12/20 |
-| 实验四  | 扩展深度数据输入流：改造数据集配置文件(.json)、load_dataset策略、augment_and_transform、CustomMask2FormerForUniversalSegmentation.forward中的pixel_calues | 已完成 | 25/03/13 |
-| 实验五  | 扩展Mask2FormerPixelLevelModule中的backbone(encoder),实现颜色数据和深度数据的分立特征提取、特征融合                                                       | 已完成 | 25_03_14 |
-| 实验六  | 构造DSA模块（深度频率统计、深度阈值分解、深度敏感注意力机制），测试本地数据集                                                                          | 已完成 | 25/03/23 |
+| 编号  | 内容                                                                                                                              | 状态  |    日期    |
+|:---:|---------------------------------------------------------------------------------------------------------------------------------|-----|:--------:|
+| 实验一 | 测试Mask2Former各模块之间的数据传递格式(例如Backbone的input格式和output格式)                                                                          | 已完成 | 25/03/13 |
+| 实验二 | 准备小规模实验数据集，作为对照实验(使用指定seed训练)，训练标准Mask2Former模型，并得到validation数据                                                                 | 已完成 | 24/12/19 |
+| 实验三 | 继承标准模型使用的Config类、Backbone(Swin)类、Pixel decoder类、Transformer类，使用上述seed进行训练，验证得出的validation数据是否一致                                 | 已完成 | 24/12/20 |
+| 实验四 | 扩展深度数据输入流：改造数据集配置文件(.json)、load_dataset策略、augment_and_transform、CustomMask2FormerForUniversalSegmentation.forward中的pixel_calues | 已完成 | 25/03/13 |
+| 实验五 | 扩展Mask2FormerPixelLevelModule中的backbone(encoder),实现颜色数据和深度数据的分立特征提取、特征融合                                                        | 已完成 | 25_03_14 |
+| 实验六 | 构造DSA模块（深度频率统计、深度阈值分解、深度敏感注意力机制），测试本地数据集                                                                                        | 已完成 | 25/03/23 |
+| 实验七 | 构造CSF模块（余弦相似度矩阵、CSFed Image生成算法、可视化监控模块），测试本地数据集                                                                                | 已完成 | 25/03/23 |
 
 ## 实验路径
 ``` 
@@ -565,4 +566,224 @@ class DSAModule(nn.Module):
 DSAM构建完毕，待集成接入主模型
 
 ---
+
+### 实验7（CSF模块）
+#### 余弦相似度算法（Cosine Similarity Algorithm）
+- Image Cosine Similarity Fusion
+
+  图像级别的余弦相似度计算，要求两（多）张图像具有相同的尺⼨，并将其展开为1维向量的形式。不妨设图像A和图像B，则有vector_A 和 vector_B。
+  余弦相似度 = vector_A 内积 vector_B / ||vector_A|| * ||vector_B||，其中|| ||为⼆范数。
+
+
+- Feature Cosine Similarity Fusion
+
+  特征尺度的余弦相似度计算，两（多）张特征图通常具有不同的尺⼨。⾸先引⼊Conv2d将特征图
+  转化为注意⼒图（⽬的在于引⼊可学习参数），并将其展开为1维向量的形式。不妨设特征图A和
+  特征图B，则有vector_A 和 vector_B。
+  余弦相似度 = vector_A 内积 vector_B / ||vector_A|| * ||vector_B||，其中|| ||为⼆范数。
+
+#### CSF算法（Cosine Similarity Fuse Algorithm）
+CSFed Image: An image processed by the Cosine Similarity Fusion algorithm
+
+- ⽣成评分矩阵：
+
+  不妨设有N张图像(O_N)需要做CSF融合（N -> 1），以轮换
+  ⽅式规定1张图为标准图（A），剩余的N-1张图与A分别做余弦相似度分析，
+  得到N-1个相似度评分矩阵（D_N-1）。
+  
+- ⽣成轮次图像及原始图积分：
+
+  在第k轮次下，⽣成⼀张第k轮结果图（B_k），
+  考虑B_k中任意位置(i, j)，该位置数据来⾃D_N-1中的位置(i, j)处得分最⾼的评
+  分矩阵所对应的图像位置像素。统计B_k中的像素信息，计算出像素信息贡献
+  最多的图像（C），为C增加与其当前轮次贡献像素信息等值的积分。
+  
+- 对齐原始图与⽣成图：
+ 
+  N张图共轮换N个轮次，因此会得到N张轮次结果图
+  （B_N）；同时原始每张图（O_N）都会拥有⼀个累计N轮次之后的积分结
+  果。将B_N与O_N对齐：O_k为标准图 -> B_k为⽣成图。
+  
+- ⽣成融合图像：
+
+  对原始图的积分进⾏归⼀化，得到权重分数T_N。融合图像
+  N = T_1 * B_1 + T_2 * B_2 + … + T_N * B_N
+
+#### 代码实现
+- Cosine Similarity
+```python
+def cosine_similarity(image_A, image_B):
+    """
+    计算图像像素级别的余弦相似度图，**向量化版本，效率更高。**
+    兼容 NumPy array 和 PyTorch Tensor 输入。
+    特殊处理两个像素向量都为零向量的情况，返回相似度 1.0。
+    使用 float32 数据类型进行计算，避免 uint8 溢出问题。
+
+    参数:
+    image_A (numpy.ndarray or torch.Tensor): 图像 A, 形状 (H, W, C) 或 (H, W)  (灰度图), dtype 可以是 uint8 或其他。
+    image_B (numpy.ndarray or torch.Tensor): 图像 B, 形状 (H, W, C') 或 (H, W) (灰度图)。
+                                图像 A 和 图像 B 需要 resize 到相同的 Height 和 Width。
+
+    返回值:
+    numpy.ndarray: 像素级别的余弦相似度图, 形状 (H, W), dtype=float32。
+                   每个像素值表示对应位置的余弦相似度得分，范围在 [-1, 1] 之间。
+                   **返回 NumPy array 格式的相似度图。**
+    """
+
+    # 1. 检查输入类型并转换为 NumPy array (保持与之前版本一致)
+    if isinstance(image_A, torch.Tensor):
+        image_A_np = image_A.cpu().numpy()
+    else:
+        image_A_np = image_A
+
+    if isinstance(image_B, torch.Tensor):
+        image_B_np = image_B.cpu().numpy()
+    else:
+        image_B_np = image_B
+
+    # 2. 转换为 float32 数据类型 (向量化操作的关键)
+    image_A_float = image_A_np.astype(np.double)
+    image_B_float = image_B_np.astype(np.double)
+
+    # 3. 向量化计算点积 (pixel-wise dot product)
+    # 如果是彩色图像 (H, W, C)，则沿着通道维度 (axis=-1) 求和，得到 (H, W) 的点积图
+    # 如果是灰度图像 (H, W)，则直接 element-wise 乘法，得到 (H, W) 的点积图
+    dot_product_map = np.sum(image_A_float * image_B_float, axis=-1, keepdims=False)  # keepdims=False 去除维度为 1 的轴
+
+    # 4. 向量化计算 L2 范数 (pixel-wise norm)
+    # 同样，沿着通道维度 (axis=-1) 计算范数，得到 (H, W) 的范数图
+    norm_A_map = np.linalg.norm(image_A_float, axis=-1, keepdims=False)
+    norm_B_map = np.linalg.norm(image_B_float, axis=-1, keepdims=False)
+
+    # 5. 向量化计算余弦相似度 (避免除以零)
+    # 初始化相似度图为 0 (处理分母为零的情况)
+    similarity_map_np = np.zeros_like(dot_product_map, dtype=np.double)
+
+    # 找到分母不为零的位置 (即 norm_A * norm_B != 0 的位置)
+    valid_denominator_mask = (norm_A_map * norm_B_map) != 0
+
+    # 在分母不为零的位置，计算余弦相似度
+    similarity_map_np[valid_denominator_mask] = (
+        dot_product_map[valid_denominator_mask] / (norm_A_map[valid_denominator_mask] * norm_B_map[valid_denominator_mask])
+    )
+
+    # **[可选] 特殊处理：两个像素向量都为零向量的情况，设置为 1.0 (如果需要)**
+    zero_vector_mask = (norm_A_map == 0) & (norm_B_map == 0)
+    similarity_map_np[zero_vector_mask] = 1.0  #  向量化设置为 1.0
+
+    return similarity_map_np  # 返回 NumPy array 格式的相似度图
+```
+
+- Cosine Similarity Fuse
+```python
+def cosine_similarity_fuse_v3(original_images, check=None):
+    """
+    Implements the Cosine Similarity Fuse (CSF) algorithm to fuse multiple images.
+    Includes a check parameter to collect intermediate data for visualization.
+
+    Args:
+        original_images (list of numpy.ndarray): A list of N original images (O_N).
+                                                Images should have the same height and width.
+        check (bool or function, optional): If True or a function is provided, intermediate
+                                            data will be collected and passed to the function.
+                                            Defaults to None.
+
+    Returns:
+        numpy.ndarray: The fused image.
+    """
+    num_images = len(original_images)
+    if num_images <= 1:
+        return original_images[0] if original_images else None  # Handle cases with 0 or 1 image
+
+    visualization_data = { # Initialize the dictionary to store visualization data
+        'similarity_score_matrices_rounds': [],
+        'contributing_pixel_counts_rounds': [],
+        'round_result_images': [],
+        'final_scores_and_weights': {}
+    }
+
+    round_result_images = []
+    original_image_scores = {i: 0 for i in range(num_images)} # Initialize scores for each original image
+
+    for k_standard_index in range(num_images):
+        standard_image = original_images[k_standard_index]
+        similarity_score_matrices = []
+        compared_image_indices = [i for i in range(num_images) if i != k_standard_index]
+
+        # 1. Generate Similarity Score Matrices (for round k)
+        current_round_similarity_matrices = [] # Store similarity matrices for current round
+        for compared_index in compared_image_indices:
+            compared_image = original_images[compared_index]
+            similarity_matrix = cosine_similarity(standard_image, compared_image)
+            similarity_score_matrices.append(similarity_matrix)
+            current_round_similarity_matrices.append(similarity_matrix) # Append to round list
+        visualization_data['similarity_score_matrices_rounds'].append(current_round_similarity_matrices) # Store for visualization data
+
+        # 2. Generate Round Image (B_k) and Original Image Scores
+        round_result_image_Bk = np.zeros_like(standard_image, dtype=np.float32) # Initialize B_k
+        contributing_image_counts = {i: 0 for i in compared_image_indices} # Count pixel contributions
+
+        height, width = standard_image.shape[:2]
+        for h in range(height):
+            for w in range(width):
+                max_similarity = -float('inf')
+                best_source_image_index = -1
+
+                for i, sim_matrix in enumerate(similarity_score_matrices):
+                    current_similarity = sim_matrix[h, w]
+                    if current_similarity > max_similarity:
+                        max_similarity = current_similarity
+                        best_source_image_index = compared_image_indices[i]
+
+                if best_source_image_index != -1: # Should always be true in this logic but good to check
+                    source_image = original_images[best_source_image_index]
+                    round_result_image_Bk[h, w] = source_image[h, w]
+                    contributing_image_counts[best_source_image_index] += 1
+
+        round_result_images.append(round_result_image_Bk)
+        visualization_data['round_result_images'].append(round_result_image_Bk) # Store round result image
+
+        visualization_data['contributing_pixel_counts_rounds'].append(contributing_image_counts) # Store contributing counts for round
+
+        # Find image C with most contribution and update score
+        max_contribution_count = -1
+        image_C_index = -1
+        for index, count in contributing_image_counts.items():
+            if count > max_contribution_count:
+                max_contribution_count = count
+                image_C_index = index
+
+        if image_C_index != -1:
+            original_image_scores[image_C_index] += max_contribution_count
+
+    # 4. Generate Fused Image
+    total_score = sum(original_image_scores.values())
+    if total_score == 0:
+        weights_normalized = [1.0 / num_images] * num_images # Default uniform weights if all scores are zero
+    else:
+        weights = [original_image_scores[i] for i in range(num_images)]
+        weights_normalized = [w / total_score for w in weights] # Normalize scores to weights
+
+    visualization_data['final_scores_and_weights']['original_image_scores'] = original_image_scores # Store final scores
+    visualization_data['final_scores_and_weights']['weights_normalized'] = weights_normalized # Store normalized weights
+
+
+    fused_image = np.zeros_like(original_images[0], dtype=np.float32)
+    for i in range(num_images):
+        fused_image += weights_normalized[i] * round_result_images[i]
+
+    if check: # Check if check is True or a function is provided
+        if callable(check):
+            check(visualization_data) # Call the injected function with visualization data
+        elif check == True:
+            pass # If check=True and no function, you can add default data printing here if needed
+
+    return fused_image.astype(original_images[0].dtype) # Return fused image with original dtype
+```
+
+#### 实验结果
+![实验结果](../../../log/25_03_23/exp7.png)
+
+#### 结论
+CSF构建完毕，待集成接入主模型
 
