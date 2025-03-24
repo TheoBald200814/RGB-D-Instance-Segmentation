@@ -10,13 +10,14 @@
 - 基于虾类图像数据，学习虾及其脏器图像区域特征，执行较为精确的实例分割任务。
 
 ## 实验清单
-| 编号  | 内容                                                                                                                             | 状态  |    日期    |
-|:---:|--------------------------------------------------------------------------------------------------------------------------------|-----|:--------:|
-| 实验一 | 测试Mask2Former各模块之间的数据传递格式(例如Backbone的input格式和output格式)                                                                         | 已完成 | 25/03/13 |
-| 实验二 | 准备小规模实验数据集，作为对照实验(使用指定seed训练)，训练标准Mask2Former模型，并得到validation数据                                                                | 已完成 | 24/12/19 |
-| 实验三 | 继承标准模型使用的Config类、Backbone(Swin)类、Pixel decoder类、Transformer类，使用上述seed进行训练，验证得出的validation数据是否一致                                | 已完成 | 24/12/20 |
-| 实验四 | 扩展深度数据输入流：改造数据集配置文件(.json)、load_dataset策略、augment_and_transform、CustomMask2FormerForUniversalSegmentation.forward中的pixel_calues | 已完成 | 25/03/13 |
-| 实验五 | 扩展Mask2FormerPixelLevelModule中的backbone(encoder),实现颜色数据和深度数据的分立特征提取、特征融合                                                       | 已完成 | 25_03_14 |
+|  编号  | 内容                                                                                                                             | 状态  |    日期    |
+|:----:|--------------------------------------------------------------------------------------------------------------------------------|-----|:--------:|
+| 实验一  | 测试Mask2Former各模块之间的数据传递格式(例如Backbone的input格式和output格式)                                                                         | 已完成 | 25/03/13 |
+| 实验二  | 准备小规模实验数据集，作为对照实验(使用指定seed训练)，训练标准Mask2Former模型，并得到validation数据                                                                | 已完成 | 24/12/19 |
+| 实验三  | 继承标准模型使用的Config类、Backbone(Swin)类、Pixel decoder类、Transformer类，使用上述seed进行训练，验证得出的validation数据是否一致                                | 已完成 | 24/12/20 |
+| 实验四  | 扩展深度数据输入流：改造数据集配置文件(.json)、load_dataset策略、augment_and_transform、CustomMask2FormerForUniversalSegmentation.forward中的pixel_calues | 已完成 | 25/03/13 |
+| 实验五  | 扩展Mask2FormerPixelLevelModule中的backbone(encoder),实现颜色数据和深度数据的分立特征提取、特征融合                                                       | 已完成 | 25_03_14 |
+| 实验六  | 构造DSA模块（深度频率统计、深度阈值分解、深度敏感注意力机制），测试本地数据集                                                                          | 已完成 | 25/03/23 |
 
 ## 实验路径
 ``` 
@@ -326,3 +327,242 @@ fused_map = [conv(m) for conv, m in zip(self.fuse_conv, merged_map)]
 - 双backbone的融合机制过于粗暴（简单的卷积合并），待调整及优化
 
 ---
+
+### 实验六(DSAM)
+#### DSAM简述
+- 深度分解 (Depth Decomposition)
+    
+    深度分解是DSAM的第一步，它的目的是将原始的深度图转化为一系列空间注意力掩码 (spatial attention masks)，这些掩码能够指示图像中不同深度范围的区域。 
+    论文作者观察到，显著性物体往往分布在特定的深度区间内，因此可以利用深度信息来初步定位潜在的显著性区域，并减少背景干扰。
+
+    ```深度分解的具体步骤```
+    1. 深度直方图统计：首先，对原始深度图进行量化，并计算深度值的直方图。直方图可以反映深度值在图像中的分布情况，也就是哪些深度值出现的频率更高。
+    2. 选择深度分布模式 (Depth Distribution Modes)：在深度直方图中，深度分布模式 指的是直方图中的峰值，也就是频率最高的深度值或深度值范围。
+       论文中选择 T个最大的深度分布模式。 可以理解为，这些峰值对应的深度值范围，很可能包含了图像中主要的物体或区域。
+    3. 深度区间窗口 (Depth Interval Windows): 每个深度分布模式 (峰值) 对应一个 深度区间窗口。 例如，如果一个峰值出现在深度值 1.0 附近，那么可能设置一个深度区间窗口为 [0.9, 1.1]。这些区间窗口定义了我们感兴趣的深度范围。
+    4. 生成深度区域 (Depth Regions): 使用这些深度区间窗口，将原始深度图分解为 T个区域。 每个区域包含原始深度图中深度值落在对应深度区间窗口内的像素。 换句话说，对于第 t 个深度区间窗口，我们创建一个二值掩码，原始深度图中深度值在该窗口内的像素位置为 1，否则为 0。 这就得到了 T 个深度区域。
+    5. 剩余区域 (Remaining Part): 直方图中，除了被选中的 T 个最大深度分布模式之外，剩余的部分 自然形成 最后一个区域 (第 T+1 个区域)。 这个区域可以理解为深度值分布相对分散或不显著的区域。
+    6. 归一化 (Normalization): 每个深度区域 (包括剩余区域) 都被归一化到 [0, 1] 范围。 归一化后的深度区域就成为了 空间注意力掩码 (b<sub>1</sub>, b<sub>2</sub>, ..., b<sub>T+1</sub>)。 掩码中的值在 0 到 1 之间，值越大表示该区域的权重越高。
+      
+    ```总结深度分解的目的```
+
+    - 通过深度分解，我们将原始的深度图转化为 T+1 个空间注意力掩码，每个掩码对应一个特定的深度范围，用于指示图像中不同深度层次的区域。 这些掩码将作为深度敏感注意力模块的输入，指导RGB特征的提取。
+
+
+- 深度敏感注意力模块 (Depth-Sensitive Attention Module) 
+
+    深度敏感注意力模块 (DSAM) 的作用是 利用深度分解得到的空间注意力掩码，来增强RGB特征，并抑制背景干扰。 它在RGB分支的每个下采样层之后被插入。
+
+
+- DSAM数据流
+
+    ```输入```
+RGB 特征图 (F_rgb_k): 来自RGB分支第 k 阶段的特征图。
+深度分解得到的空间注意力掩码 (b_1, b_2, ..., b_(T+1)): 共 T+1 个掩码。
+掩码尺寸对齐 (Pooling): 由于RGB特征图 F_rgb_k 经过了下采样，其尺寸可能小于原始深度图。因此，需要使用 最大池化 (MaxPool) 操作 将深度掩码 b_t 调整到与 RGB 特征图 F_rgb_k 相同的尺寸，得到调整后的掩码 p_t = MaxPool(b_t)。 最大池化能够保留深度区域的空间范围，并降低计算复杂度。
+并行子分支 (Parallel Sub-branches): DSAM 创建 T+1 个并行的子分支，每个子分支对应一个深度掩码 p_t。
+元素级乘法 (Element-wise Multiplication): 在每个子分支中，将对应的掩码 p_t 与 RGB 特征图 F_rgb_k 的每个通道 进行 元素级乘法 (⊗)。 p_t ⊗ F_rgb_k 这意味着，深度掩码 p_t 作为空间注意力权重，作用于 RGB 特征图 F_rgb_k 的空间位置上。 掩码值高的区域，对应的RGB特征被增强；掩码值低的区域，对应的RGB特征被抑制。 这就实现了 深度敏感的特征选择和增强。
+1x1 卷积层 (1x1 Convolution Layer): 在每个子分支的元素级乘法之后，使用一个 1x1 卷积层 (Conv<sub>1x1</sub>)。 这个 1x1 卷积层的作用是：
+特征提炼 (Feature Refinement): 对经过深度掩码加权后的特征进行进一步的提炼和调整。
+通道维度变换 (Channel Dimension Transformation): 1x1 卷积可以改变特征图的通道数，使其更适合后续的融合。
+非线性变换 (Non-linearity): 卷积层通常包含激活函数 (虽然图中未明确标出，但通常会使用)，引入非线性，增强模型的表达能力。
+元素级求和 (Element-wise Summation): 将 所有 T+1 个子分支的 1x1 卷积层的输出 进行 元素级求和 (∑)。 F_enh_k = ∑ Conv_1x1(p_t ⊗ F_rgb_k) 这样，来自不同深度区域的深度敏感特征被 聚合 起来。
+残差连接 (Residual Connection): 为了更好地训练深层网络，并保留原始RGB特征的信息，DSAM 引入了 残差连接。 将 增强后的 RGB 特征 F_enh_k 与 原始 RGB 特征 F_rgb_k 进行 元素级相加 (+)，得到最终的输出特征 r_k = F_enh_k + F_rgb_k。 残差连接有助于信息流通，并减轻梯度消失问题。
+输出: 增强后的 RGB 特征图 r_k，作为DSAM的输出，将传递到网络的后续层进行处理。
+
+- 总结
+
+    利用深度分解得到的空间注意力掩码，显式地将深度信息融入到RGB特征提取过程中。
+通过元素级乘法，根据深度信息对RGB特征进行空间加权，增强与显著性物体深度范围相关的特征，抑制背景区域的特征。
+通过并行子分支和 1x1 卷积，对不同深度区域的特征进行独立处理和提炼，并进行有效融合。
+通过残差连接，保证信息的有效传递和网络的稳定训练。
+#### [参考文献: Deep RGB-D Saliency Detection with Depth-Sensitive Attention and Automatic Multi-Modal Fusion](../../../log/25_03_23/paper_DSAM.pdf)
+
+#### 代码实现
+
+- 深度频率统计
+```python
+def calculate_depth_histogram(depth_map, bins=512, value_range=None):
+    """
+    计算深度图的直方图。
+
+    Args:
+        depth_map (numpy.ndarray): 输入深度图 (单通道).
+        bins (int): 直方图的柱子数量 (bins). 默认 256.
+        value_range (tuple, optional): 深度值的范围 (min, max).
+                                      如果不指定，则使用深度图中的最小值和最大值. Defaults to None.
+
+    Returns:
+        tuple: 包含直方图计数 (hist) 和 bin 边缘 (bin_edges).
+    """
+    if value_range is None:
+        value_range = (np.nanmin(depth_map), np.nanmax(depth_map)) # 忽略 NaN 值
+
+    hist, bin_edges = np.histogram(depth_map.flatten(), bins=bins, range=value_range, density=False)
+    return hist, bin_edges
+
+def select_depth_distribution_modes(hist, bin_edges, num_modes=3, prominence_threshold=0.01):
+    """
+    从深度直方图中选择深度分布模式 (峰值).
+
+    Args:
+        hist (numpy.ndarray): 直方图计数.
+        bin_edges (numpy.ndarray): bin 边缘.
+        num_modes (int): 要选择的深度分布模式的数量. 默认 3.
+        prominence_threshold (float): 峰值的显著性阈值 (相对于最大峰值高度).
+                                     用于过滤不显著的峰值. 默认 0.01.
+
+    Returns:
+        list: 包含选定深度分布模式的中心值 (近似).
+              如果找不到足够的显著峰值，则返回少于 num_modes 的列表.
+    """
+    from scipy.signal import find_peaks
+
+    # 查找峰值索引
+    peaks_indices, _ = find_peaks(hist, prominence=prominence_threshold * np.max(hist)) # 使用显著性阈值
+
+    if not peaks_indices.size: # 如果没有找到峰值
+        return []
+
+    # 获取峰值的高度和位置 (近似中心值)
+    peak_heights = hist[peaks_indices]
+    peak_centers = bin_edges[:-1][peaks_indices] + np.diff(bin_edges)[peaks_indices] / 2.0 # 近似中心值
+
+    # 将峰值按照高度降序排序
+    peak_data = sorted(zip(peak_heights, peak_centers), reverse=True)
+
+    selected_modes = [center for _, center in peak_data[:num_modes]] # 选择前 num_modes 个峰值中心
+
+    return selected_modes
+```
+
+- 深度分解
+```python
+def define_depth_interval_windows(depth_modes, window_size_ratio=0.1):
+    """
+    根据深度分布模式定义深度区间窗口.
+
+    Args:
+        depth_modes (list): 深度分布模式的中心值列表.
+        window_size_ratio (float): 窗口大小相对于深度模式中心值的比例. 默认 0.1.
+                                   例如，ratio=0.1，则窗口宽度为中心值的 10%.
+
+    Returns:
+        list: 包含深度区间窗口 (元组 (lower_bound, upper_bound)) 的列表.
+    """
+    interval_windows = []
+    for mode_center in depth_modes:
+        window_half_width = mode_center * window_size_ratio / 2.0  # 半宽度，保证窗口宽度与中心值比例一致
+        lower_bound = max(0, mode_center - window_half_width) # 保证下界不小于0，假设深度值非负
+        upper_bound = mode_center + window_half_width
+        interval_windows.append((lower_bound, upper_bound))
+    return interval_windows
+
+
+def generate_depth_region_masks(depth_map, interval_windows):
+    """
+    根据深度区间窗口生成深度区域掩码.
+
+    Args:
+        depth_map (numpy.ndarray): 输入深度图 (单通道).
+        interval_windows (list): 深度区间窗口列表，每个窗口为元组 (lower_bound, upper_bound).
+
+    Returns:
+        list: 包含深度区域掩码 (numpy.ndarray, bool 类型) 的列表.
+              最后一个掩码是剩余区域掩码.
+    """
+    region_masks = []
+    combined_mask = np.zeros_like(depth_map, dtype=bool) # 用于记录已覆盖的区域
+
+    for lower_bound, upper_bound in interval_windows:
+        mask = (depth_map >= lower_bound) & (depth_map <= upper_bound)
+        region_masks.append(mask)
+        combined_mask |= mask # 累积覆盖区域
+
+    # 生成剩余区域掩码 (深度值不在任何定义的窗口内的区域)
+    remaining_mask = ~combined_mask
+    region_masks.append(remaining_mask)
+
+    return region_masks
+```
+
+- DSAM
+```python
+class DSAModule(nn.Module):
+    def __init__(self, in_channels, out_channels, num_depth_regions=3):
+        """
+        深度敏感注意力模块 (DSAM)。
+
+        Args:
+            in_channels (int): 输入 RGB 特征图的通道数.
+            out_channels (int): 输出增强 RGB 特征图的通道数.
+            num_depth_regions (int): 深度分解的区域数量 (T).  实际子分支数量为 T+1 (包含剩余区域). 默认 3.
+        """
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.num_depth_regions = num_depth_regions
+        self.conv_layers = nn.ModuleList([
+            nn.Conv2d(in_channels, out_channels, kernel_size=1) for _ in range(num_depth_regions + 1)
+        ]) # T+1 个 1x1 卷积层
+
+    def forward(self, rgb_features, depth_map):
+        """
+        DSAM 的前向传播过程.
+
+        Args:
+            rgb_features (torch.Tensor): 输入 RGB 特征图, 形状为 (B, C_in, H, W).
+            depth_map (torch.Tensor): 输入原始深度图, 形状为 (B, 1, H_d, W_d) 或 (B, H_d, W_d) 或 (H_d, W_d)  (单通道).
+                                      注意：为了代码的通用性，函数内部会处理不同形状的深度图.
+
+        Returns:
+            torch.Tensor: 增强后的 RGB 特征图, 形状为 (B, C_out, H, W).
+        """
+        # 1. 深度分解 (Depth Decomposition)
+        # 确保深度图是 NumPy 数组且为单通道 (如果输入是 Tensor，先转为 NumPy)
+        if isinstance(depth_map, torch.Tensor):
+            depth_map_np = depth_map.squeeze().cpu().detach().numpy()  # 去除通道维度，转为 NumPy, 放到 CPU
+        elif isinstance(depth_map, np.ndarray):
+            depth_map_np = depth_map.squeeze() # 确保是单通道
+        else:
+            raise TypeError("Depth map must be torch.Tensor or numpy.ndarray")
+
+        interval_windows = [] # 初始化为空列表，防止在没有检测到 depth_modes 时报错
+        region_masks = []
+
+        hist, bin_edges = calculate_depth_histogram(depth_map_np)
+        depth_modes = select_depth_distribution_modes(hist, bin_edges, num_modes=self.num_depth_regions)
+        if depth_modes: # 只有当检测到 depth_modes 时才进行后续步骤，防止空列表导致错误
+            interval_windows = define_depth_interval_windows(depth_modes)
+            region_masks = generate_depth_region_masks(depth_map_np, interval_windows)
+        else:
+            # 如果没有检测到深度模式，则创建一个全零的掩码列表，保证程序正常运行，但不进行深度引导
+            region_masks = [np.zeros_like(depth_map_np, dtype=bool)] * (self.num_depth_regions + 1)
+
+
+        # 2. 深度敏感注意力 (Depth-Sensitive Attention)
+        enhanced_features = 0
+        for i in range(len(region_masks)):
+            # 将 NumPy mask 转换为 PyTorch Tensor, 并放到与 rgb_features 相同的设备上
+            mask_tensor = torch.from_numpy(region_masks[i]).float().unsqueeze(0).unsqueeze(0).to(rgb_features.device) # (1, 1, H_d, W_d)
+            # resize mask to match rgb_features' spatial size using adaptive max pooling
+            resized_mask = nn.functional.adaptive_max_pool2d(mask_tensor, rgb_features.shape[2:]) # (1, 1, H, W)
+
+            masked_features = rgb_features * resized_mask  # 元素级乘法 (B, C_in, H, W) * (1, 1, H, W)  -> (B, C_in, H, W)
+            refined_features = self.conv_layers[i](masked_features) # 1x1 卷积 (B, C_in, H, W) -> (B, C_out, H, W)
+            enhanced_features += refined_features # 元素级求和
+
+
+        output_features = enhanced_features + rgb_features  # 残差连接
+        return output_features
+```
+
+#### 深度频率统计&分解实验结果
+
+![结果](../../../log/25_03_23/exp6.png)
+
+#### 结论
+DSAM构建完毕，待集成接入主模型
+
+---
+
