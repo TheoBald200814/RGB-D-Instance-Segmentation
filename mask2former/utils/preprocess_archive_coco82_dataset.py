@@ -311,4 +311,27 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    # main()
+    coco82v2_dir = "dataset/local/coco82v2"
+    img_name_list = [i for i in os.listdir(os.path.join(coco82v2_dir, "eq")) if i != '.DS_Store']
+    img_path_list = [os.path.join(coco82v2_dir + '/color', i) for i in img_name_list]
+    mask_path_list = [os.path.join(coco82v2_dir + '/mask', i) for i in img_name_list]
+    output_path ="/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/coco82v2"
+    depth_path_list = [os.path.join(coco82v2_dir + '/ahe', i) for i in img_name_list]
+    # [RGB, DECIMATION, RS, SPATIAL, HOLE_FILLING, AHE, LAPLACE, GAUSSIAN, EQ, LT]
+    depth_expand_list_dict = {
+        "decimation_depth": [os.path.join(coco82v2_dir + '/decimation', i) for i in img_name_list],
+        "depth_colormap_by_rs": [os.path.join(coco82v2_dir + '/rs', i) for i in img_name_list],
+        "spatial_depth": [os.path.join(coco82v2_dir + '/spatial', i) for i in img_name_list],
+        "hole_filling_depth": [os.path.join(coco82v2_dir + '/hole_filling', i) for i in img_name_list],
+        "ahe_depth": [os.path.join(coco82v2_dir + '/ahe', i) for i in img_name_list],
+        "laplace_depth": [os.path.join(coco82v2_dir + '/laplace', i) for i in img_name_list],
+        "gaussian_depth": [os.path.join(coco82v2_dir + '/gaussian', i) for i in img_name_list],
+        "eq_depth": [os.path.join(coco82v2_dir + '/eq', i) for i in img_name_list],
+        "lt_depth": [os.path.join(coco82v2_dir + '/lt', i) for i in img_name_list],
+    }
+    (train_image_path_list, train_mask_path_list, train_depth_expand_list_dict,
+     valid_image_path_list, valid_mask_path_list, valid_depth_expand_list_dict) = split2train_and_valid(img_path_list, mask_path_list, depth_expand_list_dict=depth_expand_list_dict)
+    generate_meta_file(train_image_path_list, train_mask_path_list, None, train_depth_expand_list_dict,
+                       valid_image_path_list, valid_mask_path_list, None, valid_depth_expand_list_dict,
+                       output_path)

@@ -26,5 +26,5 @@
   "valid_json_path" : "dataset/local/coco82/valid.json",
   "label2id_path": "dataset/local/label2id.json",
   "ignore_index": 0,
-  "rgb_d": "ultra"
+  "rgb_d": "single"
 }
