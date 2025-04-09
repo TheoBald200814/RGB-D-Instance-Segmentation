@@ -825,6 +825,59 @@ def cosine_similarity(image_A, image_B):
     return similarity_map_np  # 返回 NumPy array 格式的相似度图
 
 
+def cosine_similarity_gpu(image_A, image_B):
+    """
+    计算图像像素级别的余弦相似度图，向量化版本，效率更高。
+    **原生兼容 NumPy array 和 PyTorch Tensor 输入，并根据输入类型返回相应类型的结果。**
+    特殊处理两个像素向量都为零向量的情况，返回相似度 1.0。
+    使用 float32 数据类型进行计算，避免 uint8 溢出问题。
+
+    参数:
+    image_A (numpy.ndarray or torch.Tensor): 图像 A, 形状 (H, W, C) 或 (H, W)  (灰度图), dtype 可以是 uint8 或其他。
+    image_B (numpy.ndarray or torch.Tensor): 图像 B, 形状 (H, W, C') 或 (H, W) (灰度图)。
+                                图像 A 和 图像 B 需要 resize 到相同的 Height 和 Width。
+
+    返回值:
+    numpy.ndarray or torch.Tensor: 像素级别的余弦相似度图, 形状 (H, W), dtype=float32。
+                   每个像素值表示对应位置的余弦相似度得分，范围在 [-1, 1] 之间。
+                   **返回类型与输入 image_A 类型一致 (NumPy array 或 PyTorch Tensor)。**
+    """
+
+    is_tensor_input = isinstance(image_A, torch.Tensor) # 判断输入是否为 Tensor
+    xp = torch if is_tensor_input else np # 根据输入类型选择对应的库 (torch 或 numpy)
+    array_type = torch.float32 if is_tensor_input else np.float32
+    float_type = torch.float32 if is_tensor_input else np.float32 # 统一使用 float32
+
+    # 1. 转换为 float32 数据类型
+    image_A_float = image_A.to(float_type) if is_tensor_input else image_A.astype(float_type)
+    image_B_float = image_B.to(float_type) if is_tensor_input else image_B.astype(float_type)
+
+    # 2. 向量化计算点积 (pixel-wise dot product)
+    dot_product_map = xp.sum(image_A_float * image_B_float, axis=-1, keepdims=False)
+
+    # 3. 向量化计算 L2 范数 (pixel-wise norm)
+    norm_A_map = xp.linalg.norm(image_A_float, axis=-1, keepdims=False) if not is_tensor_input else xp.norm(image_A_float, dim=-1, keepdim=False) # 兼容 Tensor 的 norm 写法
+    norm_B_map = xp.linalg.norm(image_B_float, axis=-1, keepdims=False) if not is_tensor_input else xp.norm(image_B_float, dim=-1, keepdim=False) # 兼容 Tensor 的 norm 写法
+
+
+    # 4. 向量化计算余弦相似度 (避免除以零)
+    similarity_map = xp.zeros_like(dot_product_map, dtype=float_type)
+
+    # 找到分母不为零的位置
+    valid_denominator_mask = (norm_A_map * norm_B_map) != 0
+
+    # 在分母不为零的位置，计算余弦相似度
+    similarity_map[valid_denominator_mask] = (
+        dot_product_map[valid_denominator_mask] / (norm_A_map[valid_denominator_mask] * norm_B_map[valid_denominator_mask])
+    )
+
+    # **[可选] 特殊处理：两个像素向量都为零向量的情况，设置为 1.0 (如果需要)**
+    zero_vector_mask = (norm_A_map == 0) & (norm_B_map == 0)
+    similarity_map[zero_vector_mask] = 1.0
+
+    return similarity_map # 返回类型与输入 image_A 类型一致 (NumPy array 或 PyTorch Tensor)
+
+
 def cosine_similarity_fuse_v1(original_images):
     """
     Implements the Cosine Similarity Fuse (CSF) algorithm to fuse multiple images.
@@ -1141,6 +1194,121 @@ def cosine_similarity_fuse_v3(original_images, check=None):
     return fused_image.astype(original_images[0].dtype) # Return fused image with original dtype
 
 
+def cosine_similarity_fuse_v3_gpu(original_images, check=None):
+    """
+    Implements the Cosine Similarity Fuse (CSF) algorithm to fuse multiple images.
+    **兼容 NumPy ndarray 和 PyTorch Tensor 输入.**
+    Includes a check parameter to collect intermediate data for visualization.
+
+    Args:
+        original_images (list of numpy.ndarray or torch.Tensor): A list of N original images (O_N).
+                                                Images should have the same height and width.
+        check (bool or function, optional): If True or a function is provided, intermediate
+                                            data will be collected and passed to the function.
+                                            Defaults to None.
+
+    Returns:
+        numpy.ndarray or torch.Tensor: The fused image, type matches input type.
+    """
+    num_images = len(original_images)
+    if num_images <= 1:
+        return original_images[0] if original_images else None  # Handle cases with 0 or 1 image
+
+    # 确定输入数据类型 (假设列表中的第一个图像的类型代表所有图像的类型)
+    is_tensor_input = isinstance(original_images[0], torch.Tensor)
+    xp = torch if is_tensor_input else np # 根据输入类型选择对应的库 (torch 或 numpy)
+    zeros_like = torch.zeros_like if is_tensor_input else np.zeros_like
+    array_type = torch.float32 if is_tensor_input else np.float32
+    input_dtype = original_images[0].dtype # 保持原始数据类型
+
+    visualization_data = { # Initialize the dictionary to store visualization data
+        'similarity_score_matrices_rounds': [],
+        'contributing_pixel_counts_rounds': [],
+        'round_result_images': [],
+        'final_scores_and_weights': {}
+    }
+
+    round_result_images = []
+    original_image_scores = {i: 0 for i in range(num_images)} # Initialize scores for each original image
+
+    for k_standard_index in range(num_images):
+        standard_image = original_images[k_standard_index]
+        similarity_score_matrices = []
+        compared_image_indices = [i for i in range(num_images) if i != k_standard_index]
+
+        # 1. Generate Similarity Score Matrices (for round k)
+        current_round_similarity_matrices = [] # Store similarity matrices for current round
+        for compared_index in compared_image_indices:
+            compared_image = original_images[compared_index]
+            similarity_matrix = cosine_similarity(standard_image, compared_image) # 直接调用兼容的 cosine_similarity 函数
+            similarity_score_matrices.append(similarity_matrix)
+            current_round_similarity_matrices.append(similarity_matrix) # Append to round list
+        visualization_data['similarity_score_matrices_rounds'].append(current_round_similarity_matrices) # Store for visualization data
+
+        # 2. Generate Round Image (B_k) and Original Image Scores
+        round_result_image_Bk = zeros_like(standard_image, dtype=array_type) # Initialize B_k
+        contributing_image_counts = {i: 0 for i in compared_image_indices} # Count pixel contributions
+
+        height, width = standard_image.shape[:2] if not is_tensor_input else standard_image.shape[-2:] # 兼容 Tensor shape 获取
+        for h in range(height):
+            for w in range(width):
+                max_similarity = -float('inf')
+                best_source_image_index = -1
+
+                for i, sim_matrix in enumerate(similarity_score_matrices):
+                    current_similarity = sim_matrix[h, w]
+                    if current_similarity > max_similarity:
+                        max_similarity = current_similarity
+                        best_source_image_index = compared_image_indices[i]
+
+                if best_source_image_index != -1: # Should always be true in this logic but good to check
+                    source_image = original_images[best_source_image_index]
+                    round_result_image_Bk[h, w] = source_image[h, w]
+                    contributing_image_counts[best_source_image_index] += 1
+
+        round_result_images.append(round_result_image_Bk)
+        visualization_data['round_result_images'].append(round_result_image_Bk) # Store round result image
+
+        visualization_data['contributing_pixel_counts_rounds'].append(contributing_image_counts) # Store contributing counts for round
+
+        # Find image C with most contribution and update score
+        max_contribution_count = -1
+        image_C_index = -1
+        for index, count in contributing_image_counts.items():
+            if count > max_contribution_count:
+                max_contribution_count = count
+                image_C_index = index
+
+        if image_C_index != -1:
+            original_image_scores[image_C_index] += max_contribution_count
+
+    # 4. Generate Fused Image
+    total_score = sum(original_image_scores.values())
+    if total_score == 0:
+        weights_normalized = [1.0 / num_images] * num_images # Default uniform weights if all scores are zero
+    else:
+        weights = [original_image_scores[i] for i in range(num_images)]
+        weights_normalized = [w / total_score for w in weights] # Normalize scores to weights
+
+    visualization_data['final_scores_and_weights']['original_image_scores'] = original_image_scores # Store final scores
+    visualization_data['final_scores_and_weights']['weights_normalized'] = weights_normalized # Store normalized weights
+
+    fused_image = zeros_like(original_images[0], dtype=array_type)
+    for i in range(num_images):
+        fused_image += weights_normalized[i] * round_result_images[i]
+
+    if check: # Check if check is True or a function is provided
+        if callable(check):
+            check(visualization_data) # Call the injected function with visualization data
+        elif check == True:
+            pass # If check=True and no function, you can add default data printing here if needed
+
+    if is_tensor_input:
+        return fused_image.to(input_dtype)  # 使用 .to() for Tensor
+    else:
+        return fused_image.astype(input_dtype)  # 使用 .astype() for NumPy
+
+
 def csf_viewer_v1(visualization_data):
     """
     Visualizes the intermediate data from cosine_similarity_fuse_v1.
@@ -1311,6 +1479,119 @@ def csf_viewer_v2(visualization_data):
     plt.show()
 
 
+def to_grayscale(image_data):
+    """
+    将输入的图片数据（NumPy ndarray 或 PyTorch Tensor）转换为单通道灰度图像。
+
+    Args:
+        image_data (numpy.ndarray or torch.Tensor): 输入的图片数据。
+            可以是彩色 (RGB) 或灰度图像。
+            - NumPy ndarray: 形状可以是 (H, W, 3), (H, W, 1), (H, W) 或 (C, H, W) where C can be 1 or 3.
+            - PyTorch Tensor: 形状可以是 (C, H, W), (B, C, H, W) 或 **(H, W, 3)** where C can be 1 or 3. **新增 (H, W, 3) 支持**
+
+    Returns:
+        numpy.ndarray or torch.Tensor: 单通道灰度图像，类型与输入相同。
+            - NumPy ndarray: 形状 (H, W).
+            - PyTorch Tensor: 形状 (1, H, W).
+
+    Raises:
+        TypeError: 如果输入数据既不是 NumPy ndarray 也不是 PyTorch Tensor。
+        ValueError: 如果输入图像不是灰度或彩色图像 (通道数不是 1 或 3)。
+    """
+    if isinstance(image_data, np.ndarray):
+        # NumPy ndarray input (保持不变)
+        ndim = image_data.ndim
+        if ndim == 3:
+            shape = image_data.shape
+            if shape[-1] == 3:  # (H, W, 3) or (C, H, W) if first dim is channel
+                # Assume (H, W, 3) format for ndarray as more common for images
+                rgb_image = image_data
+                r_channel = rgb_image[:, :, 0]
+                g_channel = rgb_image[:, :, 1]
+                b_channel = rgb_image[:, :, 2]
+                grayscale_image = 0.299 * r_channel + 0.587 * g_channel + 0.114 * b_channel
+            elif shape[0] == 3:  # (3, H, W) format
+                rgb_image = image_data
+                r_channel = rgb_image[0, :, :]
+                g_channel = rgb_image[1, :, :]
+                b_channel = rgb_image[2, :, :]
+                grayscale_image = 0.299 * r_channel + 0.587 * g_channel + 0.114 * b_channel
+            elif shape[-1] == 1 or shape[
+                0] == 1:  # (H, W, 1) or (1, H, W) - already grayscale, just squeeze channel dim
+                grayscale_image = image_data.squeeze()
+            else:
+                raise ValueError(
+                    "Input NumPy ndarray image should be RGB (H, W, 3) or (C, H, W) with C=3, or grayscale (H, W, 1), (1, H, W) or (H, W).")
+        elif ndim == 2:  # (H, W) - already grayscale
+            grayscale_image = image_data
+        else:
+            raise ValueError("Input NumPy ndarray image should be 2D (H, W) or 3D (H, W, C) or (C, H, W).")
+
+        return grayscale_image.astype(image_data.dtype)  # Keep original dtype
+
+    elif isinstance(image_data, torch.Tensor):
+        # PyTorch Tensor input (修改部分)
+        ndim = image_data.ndim
+        if ndim == 4:  # (B, C, H, W)
+            channels = image_data.shape[1]  # Channels is at dimension 1
+            is_channel_first = True  # Assume (B, C, H, W)
+        elif ndim == 3:
+            shape = image_data.shape
+            if shape[0] == 3:  # (C, H, W)
+                channels = shape[0]  # Channels is at dimension 0
+                is_channel_first = True
+            elif shape[-1] == 3:  # **(H, W, 3)**  新增 (H, W, 3) 形状处理
+                channels = shape[-1]  # Channels is at dimension -1
+                is_channel_first = False  # Indicate (H, W, 3) format
+            elif shape[0] == 1 or shape[-1] == 1:  # (1, H, W) or (H, W, 1) - grayscale
+                channels = 1
+                is_channel_first = shape[0] == 1  # Check if channel is first dimension
+            else:
+                raise ValueError("Input PyTorch Tensor image with ndim=3, but cannot determine channel location.")
+
+        else:
+            raise ValueError(
+                "Input PyTorch Tensor image should be 3D (C, H, W) or (H, W, 3) or 4D (B, C, H, W).")  # Modified error message
+
+        if channels == 3:  # RGB image
+            r_weight = 0.299
+            g_weight = 0.587
+            b_weight = 0.114
+            if ndim == 3:  # (C, H, W) or (H, W, 3)
+                if is_channel_first:  # (C, H, W)
+                    r_channel = image_data[0, :, :]
+                    g_channel = image_data[1, :, :]
+                    b_channel = image_data[2, :, :]
+                else:  # **(H, W, 3)**  处理 (H, W, 3) 形状
+                    r_channel = image_data[:, :, 0]
+                    g_channel = image_data[:, :, 1]
+                    b_channel = image_data[:, :, 2]
+                grayscale_image = r_weight * r_channel + g_weight * g_channel + b_weight * b_channel
+                grayscale_image = grayscale_image.unsqueeze(0)  # (1, H, W)
+            else:  # (B, C, H, W) -  (B, C, H, W) format remains unchanged
+                grayscale_image_batch = r_weight * image_data[:, 0, :, :] + \
+                                        g_weight * image_data[:, 1, :, :] + \
+                                        b_weight * image_data[:, 2, :, :]
+                grayscale_image = grayscale_image_batch.unsqueeze(1)  # (B, 1, H, W)
+
+        elif channels == 1:  # Already grayscale
+            if ndim == 3:  # (C, H, W) or (H, W, 1)
+                if is_channel_first:
+                    grayscale_image = image_data  # (1, H, W) - already (1, H, W)
+                else:  # (H, W, 1)
+                    grayscale_image = image_data.permute(2, 0, 1)  # Convert (H, W, 1) to (1, H, W)
+            else:  # (B, 1, H, W)
+                grayscale_image = image_data  # (B, 1, H, W) - already (B, 1, H, W)
+        else:
+            raise ValueError(
+                f"Input PyTorch Tensor image should be grayscale (1 channel) or RGB (3 channels), but has {channels} channels.")
+
+        return grayscale_image.to(image_data.dtype)  # Keep original dtype
+
+    else:
+        raise TypeError("Input image_data must be a NumPy ndarray or a PyTorch Tensor.")
+
+
 def main():
     image_dir = "dataset/local/coco82/color"
     output_dir = "dataset/local/coco82"
@@ -1333,4 +1614,29 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    # main()
+
+    # Example Usage with NumPy ndarray
+    # numpy_images = [
+    #     np.array(Image.open('/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/log/25_03_21/arch_img/ahe.png')), # 假设您有 image1.png, image2.png, image3.png (灰度图)
+    #     np.array(Image.open('/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/log/25_03_21/arch_img/eq.png')),
+    #     np.array(Image.open('/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/log/25_03_21/arch_img/gaussian.png'))
+    # ]
+    #
+    # fused_image_numpy = cosine_similarity_fuse_v3_gpu(numpy_images, check=csf_viewer_v2)
+    # print("Fused image (NumPy) type:", type(fused_image_numpy))
+    # plt.imshow(fused_image_numpy, cmap='gray')
+    # plt.title('Fused Image (NumPy Input)')
+    # plt.show()
+
+
+    # Example Usage with PyTorch Tensor (假设您已经加载了 Tensor 图像)
+    tensor_images = [torch.randn(64, 64, 3) for _ in range(3)] #  创建 3 个随机 Tensor 图像 (灰度图)
+
+    fused_image_tensor = cosine_similarity_fuse_v3_gpu(tensor_images, check=csf_viewer_v2)
+    print("Fused image (Tensor) type:", type(fused_image_tensor))
+
+    # 显示 Tensor 图像 (需要转换为 NumPy for matplotlib)
+    plt.imshow(fused_image_tensor.cpu().numpy(), cmap='gray')
+    plt.title('Fused Image (Tensor Input)')
+    plt.show()

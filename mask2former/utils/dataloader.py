@@ -12,6 +12,7 @@ from transformers.image_processing_utils import BatchFeature
 from transformers import (
     AutoImageProcessor,
 )
+from mask2former.utils.data_process import cosine_similarity_fuse_v3, to_grayscale, csf_viewer_v2
 
 
 def dataloader(args, image_processor):
@@ -45,6 +46,7 @@ def dataloader(args, image_processor):
         )
         dataset["train"] = dataset["train"].map(transform_rgbd)
         dataset["validation"] = dataset["validation"].map(transform_rgbd)
+
     elif args.rgb_d == 'ultra': # RGB-D(30 channel)
         dataset = dataset.cast_column("image", [IMG()])
         transform_rgbd_ultra = partial(
@@ -52,6 +54,7 @@ def dataloader(args, image_processor):
         )
         dataset["train"] = dataset["train"].map(transform_rgbd_ultra)
         dataset["validation"] = dataset["validation"].map(transform_rgbd_ultra)
+
     else:  # RGB only(3 channel)
         transform_rgb = partial(
             rgb_aug_and_trans, transform=train_augment_and_transform, image_processor=image_processor
@@ -155,13 +158,13 @@ def rgbd_aug_and_trans(example, transform, image_processor):
 
 def rgbd_ultra_aug_and_trans(example, transform, image_processor):
     # Resize image
-    size = (256, 256)
+    # size = (256, 256)
     assert len(example["image"]) >= 2, "the dataset not include multi-modal image, but the param of rgb_d in config.json was multi/ultra"
     # example["image"] = [example["image"][0], example["image"][1].convert('RGB')]
     example["image"] = [i.convert('RGB') for i in example["image"]]
-    example["image"] = [image.resize(size, Image.BILINEAR) for image in example["image"]]
+    # example["image"] = [image.resize(size, Image.BILINEAR) for image in example["image"]]
     # Resize annotation (use NEAREST to preserve label values)
-    example["annotation"] = example["annotation"].resize(size, Image.NEAREST)
+    # example["annotation"] = example["annotation"].resize(size, Image.NEAREST)
 
     image = np.array(example["image"])
     image = image.transpose(1, 2, 0, 3).reshape(image.shape[1], image.shape[2], -1)
@@ -177,21 +180,57 @@ def rgbd_ultra_aug_and_trans(example, transform, image_processor):
         instance_id: semantic_id for semantic_id, instance_id in unique_semantic_id_instance_id_pairs
     }
 
+    # Insert ICSFer
+    aug_fused_img_1, aug_fused_img_2, depth_input = rgbd_ultra_preprocess(aug_image)
+    color = image[..., 0:3]
+    ahe = image[..., 15:18]
+    laplace = image[..., 18:21]
+    gaussian = image[..., 21:24]
+
     model_inputs = image_processor(
-        images=[aug_image[..., :3], aug_image[..., 3:6], aug_image[..., 6:9], aug_image[..., 9:12], aug_image[..., 12:15],
-                aug_image[..., 15:18], aug_image[..., 18:21], aug_image[..., 21:24], aug_image[..., 24:27], aug_image[..., 27:30]],
-        segmentation_maps=[aug_instance_mask, aug_instance_mask, aug_instance_mask, aug_instance_mask, aug_instance_mask,
-                           aug_instance_mask, aug_instance_mask, aug_instance_mask, aug_instance_mask, aug_instance_mask],
+        images=[color, aug_fused_img_1, aug_fused_img_2, depth_input, ahe, laplace, gaussian],
+        segmentation_maps=[aug_instance_mask, aug_instance_mask, aug_instance_mask, aug_instance_mask,
+                           aug_instance_mask, aug_instance_mask, aug_instance_mask],
         instance_id_to_semantic_id=instance_id_to_semantic_id,
         return_tensors="pt",
     )
 
     image = model_inputs.pixel_values
+
+    # example["pixel_values"] : [aug_fused_img_1, aug_fused_img_2, depth_input, ahe, laplace, gaussian]
     example["pixel_values"] = image.reshape(-1, image.shape[2], image.shape[3]).tolist()
     example["mask_labels"] = model_inputs.mask_labels[0].tolist()
     example["class_labels"] = model_inputs.class_labels[0]
 
     return example
+
+
+def rgbd_ultra_preprocess(image):
+    # (batch, 30, H, W) [RGB, DECIMATION, RS, SPATIAL, HOLE_FILLING, AHE, LAPLACE, GAUSSIAN, EQ, LT]
+    print("basic_test")
+
+    decimation = image[..., 3:6]
+    rs = image[..., 6:9]
+    spatial = image[..., 9:12]
+    hole_filling = image[..., 12:15]
+    ahe = image[..., 15:18]
+    laplace = image[..., 18:21]
+    gaussian = image[..., 21:24]
+    eq = image[..., 24:27]
+    lt = image[..., 27:30]
+
+    # ICSFer
+    fused_img_1 = cosine_similarity_fuse_v3([ahe, laplace, gaussian], check=None)
+    fused_img_2 = cosine_similarity_fuse_v3([decimation, rs, spatial, hole_filling], check=None)
+
+    # depth backbone
+    eq = to_grayscale(eq)
+    lt = to_grayscale(lt)
+
+    fused_img_gray = to_grayscale(fused_img_1)
+    depth_input = np.stack([eq, lt, fused_img_gray], axis=2)
+
+    return fused_img_1, fused_img_2, depth_input
 
 
 def collate_fn(examples):
