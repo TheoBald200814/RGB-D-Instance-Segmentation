@@ -20,6 +20,7 @@ import numpy as np
 from PIL import Image
 from typing import Dict, Tuple, List
 import matplotlib.pyplot as plt
+from collections import defaultdict
 
 
 def get_unique_colors(image_path):
@@ -1592,6 +1593,246 @@ def to_grayscale(image_data):
         raise TypeError("Input image_data must be a NumPy ndarray or a PyTorch Tensor.")
 
 
+# Helper function remains the same
+def _extract_metrics_from_file(json_file_path):
+    """Helper function to extract metrics from a single JSON file."""
+    try:
+        with open(json_file_path, 'r') as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        print(f"Warning: File not found at {json_file_path}. Skipping.")
+        return None
+    except json.JSONDecodeError:
+        print(f"Warning: Could not decode JSON from {json_file_path}. Skipping.")
+        return None
+    except Exception as e:
+        print(f"Warning: An unexpected error occurred while reading {json_file_path}: {e}. Skipping.")
+        return None
+
+    log_history = data.get("log_history")
+    if not log_history:
+        print(f"Warning: 'log_history' key not found or is empty in {json_file_path}. Skipping.")
+        return None
+
+    metrics = defaultdict(list)
+    steps = defaultdict(list)
+
+    for entry in log_history:
+        step = entry.get("step")
+        if step is None:
+            continue # Skip entries without a step
+
+        # Training metrics
+        if "loss" in entry and "learning_rate" in entry:
+            metrics["train_loss"].append(entry.get("loss"))
+            steps["train_loss"].append(step)
+            metrics["lr"].append(entry.get("learning_rate"))
+            steps["lr"].append(step)
+            metrics["grad_norm"].append(entry.get("grad_norm")) # Might be None
+            steps["grad_norm"].append(step)
+
+
+        # Evaluation metrics
+        elif "eval_loss" in entry:
+             metrics["eval_loss"].append(entry.get("eval_loss"))
+             steps["eval_loss"].append(step)
+             metrics["eval_map"].append(entry.get("eval_map"))
+             steps["eval_map"].append(step)
+             metrics["eval_map_50"].append(entry.get("eval_map_50"))
+             steps["eval_map_50"].append(step)
+             metrics["eval_map_75"].append(entry.get("eval_map_75"))
+             steps["eval_map_75"].append(step)
+             # Extract other eval metrics here if needed
+
+
+    # Filter out None values and ensure alignment (important for grad_norm mostly)
+    filtered_metrics = {}
+    for key, values in metrics.items():
+        step_list = steps[key]
+        # Filter based on the metric value being non-None
+        valid_indices = [i for i, v in enumerate(values) if v is not None]
+        if valid_indices: # Only add if there's actual data
+             filtered_metrics[f'{key}_steps'] = [step_list[i] for i in valid_indices]
+             filtered_metrics[key] = [values[i] for i in valid_indices]
+
+    return filtered_metrics
+
+
+def plot_multiple_training_metrics_separated(json_file_paths, model_names, output_dir=None):
+    """
+    Loads training log history from multiple trainer_state.json files
+    and plots key training and evaluation metrics for comparison,
+    separating Train/Eval Loss and different mAP scores into individual plots.
+
+    Args:
+        json_file_paths (list[str]): List of paths to the trainer_state.json files.
+        model_names (list[str]): List of names corresponding to each json file path.
+                                 Used for labeling plots.
+        output_dir (str, optional): Directory to save the plot image.
+                                     If None, the plot will be displayed instead.
+                                     Defaults to None.
+    """
+    if not isinstance(json_file_paths, list) or not isinstance(model_names, list):
+        print("Error: json_file_paths and model_names must be lists.")
+        return
+    if len(json_file_paths) != len(model_names):
+        print("Error: The number of json file paths must match the number of model names.")
+        return
+    if not json_file_paths:
+        print("Error: No JSON file paths provided.")
+        return
+
+    all_metrics_data = {}
+    for path, name in zip(json_file_paths, model_names):
+        metrics = _extract_metrics_from_file(path)
+        if metrics: # Only store if data was successfully extracted
+            all_metrics_data[name] = metrics
+
+    if not all_metrics_data:
+        print("Error: No valid data could be extracted from any of the provided files.")
+        return
+
+    # --- Plotting ---
+    num_plots = 6 # TrainLoss, EvalLoss, LR/GradNorm, mAP, mAP50, mAP75
+    # Increase figure height to accommodate more plots
+    fig, axs = plt.subplots(num_plots, 1, figsize=(12, 5 * num_plots), sharex=True)
+    fig.suptitle('Comparative Training Metrics (Separated)', fontsize=16)
+
+    # Define color cycle for better distinction if many models
+    prop_cycle = plt.rcParams['axes.prop_cycle']
+    colors = prop_cycle.by_key()['color']
+    num_colors = len(colors)
+    markers = ['o', 's', '^', 'd', 'v', '*', 'p', 'X'] # More markers
+
+
+    # --- Plot 1: Train Loss ---
+    ax = axs[0]
+    for i, (model_name, metrics) in enumerate(all_metrics_data.items()):
+        color = colors[i % num_colors]
+        if 'train_loss' in metrics and metrics['train_loss']:
+            ax.plot(metrics.get('train_loss_steps', []), metrics['train_loss'],
+                         label=f'{model_name}', alpha=0.9, color=color) # Simpler label now
+    ax.set_ylabel('Loss')
+    ax.set_title('Training Loss')
+    ax.grid(True, linestyle=':')
+    ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left')
+
+    # --- Plot 2: Eval Loss ---
+    ax = axs[1]
+    for i, (model_name, metrics) in enumerate(all_metrics_data.items()):
+        color = colors[i % num_colors]
+        marker = markers[i % len(markers)]
+        if 'eval_loss' in metrics and metrics['eval_loss']:
+            ax.plot(metrics.get('eval_loss_steps', []), metrics['eval_loss'],
+                         label=f'{model_name}', marker=marker, linestyle='--',
+                         alpha=0.8, color=color) # Simpler label
+    ax.set_ylabel('Loss')
+    ax.set_title('Evaluation Loss')
+    ax.grid(True, linestyle=':')
+    ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left')
+
+
+    # --- Plot 3: Learning Rate and Gradient Norm ---
+    ax_lr = axs[2]
+    ax_gn = ax_lr.twinx() # Create a twin y-axis for grad norm
+    lines_lr, labels_lr = [], []
+    lines_gn, labels_gn = [], []
+
+    for i, (model_name, metrics) in enumerate(all_metrics_data.items()):
+        color = colors[i % num_colors]
+        # Plot Learning Rate
+        if 'lr' in metrics and metrics['lr']:
+            line, = ax_lr.plot(metrics.get('lr_steps', []), metrics['lr'],
+                              label=f'{model_name} - LR', color=color, alpha=0.9)
+            lines_lr.append(line)
+            labels_lr.append(f'{model_name} - LR')
+
+        # Plot Grad Norm
+        if 'grad_norm' in metrics and metrics['grad_norm']:
+             line, = ax_gn.plot(metrics.get('grad_norm_steps', []), metrics['grad_norm'],
+                              label=f'{model_name} - Grad Norm', color=color, linestyle=':', alpha=0.6)
+             lines_gn.append(line)
+             labels_gn.append(f'{model_name} - Grad Norm')
+
+    ax_lr.set_ylabel('Learning Rate', color='tab:blue') # Assume LR axis is primary blue
+    ax_lr.tick_params(axis='y', labelcolor='tab:blue')
+    ax_lr.ticklabel_format(style='sci', axis='y', scilimits=(0,0))
+
+    ax_gn.set_ylabel('Gradient Norm', color='tab:red') # Assume GN axis is secondary red
+    ax_gn.tick_params(axis='y', labelcolor='tab:red')
+
+    ax_lr.set_title('Learning Rate and Gradient Norm')
+    # Combine legends from both axes and place outside
+    ax_gn.legend(lines_lr + lines_gn, labels_lr + labels_gn, bbox_to_anchor=(1.02, 1), loc='upper left')
+    ax_lr.grid(True, linestyle=':')
+
+
+    # --- Plot 4: Evaluation mAP ---
+    ax = axs[3]
+    for i, (model_name, metrics) in enumerate(all_metrics_data.items()):
+        color = colors[i % num_colors]
+        marker = markers[i % len(markers)]
+        if 'eval_map' in metrics and metrics['eval_map']:
+            ax.plot(metrics.get('eval_map_steps', []), metrics['eval_map'],
+                         label=f'{model_name}', marker=marker, linestyle='-',
+                         alpha=0.8, color=color) # Simpler label
+    ax.set_ylabel('mAP Score')
+    ax.set_title('Evaluation mAP')
+    ax.grid(True, linestyle=':')
+    ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left')
+
+
+    # --- Plot 5: Evaluation mAP@50 ---
+    ax = axs[4]
+    for i, (model_name, metrics) in enumerate(all_metrics_data.items()):
+        color = colors[i % num_colors]
+        marker = markers[i % len(markers)]
+        if 'eval_map_50' in metrics and metrics['eval_map_50']:
+            ax.plot(metrics.get('eval_map_50_steps', []), metrics['eval_map_50'],
+                         label=f'{model_name}', marker=marker, linestyle='-.', # Changed linestyle
+                         alpha=0.8, color=color) # Simpler label
+    ax.set_ylabel('mAP@50 Score')
+    ax.set_title('Evaluation mAP@50')
+    ax.grid(True, linestyle=':')
+    ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left')
+
+    # --- Plot 6: Evaluation mAP@75 ---
+    ax = axs[5]
+    for i, (model_name, metrics) in enumerate(all_metrics_data.items()):
+        color = colors[i % num_colors]
+        marker = markers[i % len(markers)]
+        if 'eval_map_75' in metrics and metrics['eval_map_75']:
+            ax.plot(metrics.get('eval_map_75_steps', []), metrics['eval_map_75'],
+                         label=f'{model_name}', marker=marker, linestyle=':', # Changed linestyle
+                         alpha=0.8, color=color) # Simpler label
+    ax.set_ylabel('mAP@75 Score')
+    ax.set_title('Evaluation mAP@75')
+    ax.grid(True, linestyle=':')
+    ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left')
+
+
+    # Common X-axis label for the last plot
+    axs[-1].set_xlabel('Training Step')
+
+    plt.tight_layout(rect=[0, 0.03, 0.9, 0.97]) # Adjust right margin for legends
+
+    # --- Output ---
+    if output_dir:
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, "comparative_training_metrics_separated.png")
+            plt.savefig(output_path, bbox_inches='tight') # Use bbox_inches to include legend
+            print(f"Plot saved to {output_path}")
+        except Exception as e:
+            print(f"Error saving plot to {output_dir}: {e}")
+            print("Displaying plot instead.")
+            plt.show()
+    else:
+        plt.show()
+
+    plt.close(fig) # Close the figure to free memory
+
+
 def main():
     image_dir = "dataset/local/coco82/color"
     output_dir = "dataset/local/coco82"
@@ -1616,27 +1857,18 @@ def main():
 if __name__ == '__main__':
     # main()
 
-    # Example Usage with NumPy ndarray
-    # numpy_images = [
-    #     np.array(Image.open('/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/log/25_03_21/arch_img/ahe.png')), # 假设您有 image1.png, image2.png, image3.png (灰度图)
-    #     np.array(Image.open('/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/log/25_03_21/arch_img/eq.png')),
-    #     np.array(Image.open('/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/log/25_03_21/arch_img/gaussian.png'))
-    # ]
-    #
-    # fused_image_numpy = cosine_similarity_fuse_v3_gpu(numpy_images, check=csf_viewer_v2)
-    # print("Fused image (NumPy) type:", type(fused_image_numpy))
-    # plt.imshow(fused_image_numpy, cmap='gray')
-    # plt.title('Fused Image (NumPy Input)')
-    # plt.show()
+    root = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/mask2former/checkpoints/remote"
+    output_dir = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/mask2former/experiments/finetuning"
+    coco82v2_single_640_path = os.path.join(root, "coco82v2_single_640/trainer_state.json")
+    coco82v2_multi_640_path = os.path.join(root, "coco82v2_multi_640/trainer_state.json")
+    coco82v2_ultra_mini_640_path = os.path.join(root, "coco82v2_ultra_mini_640/trainer_state.json")
 
+    json_files = [coco82v2_single_640_path,
+                  coco82v2_multi_640_path,
+                  coco82v2_ultra_mini_640_path]
 
-    # Example Usage with PyTorch Tensor (假设您已经加载了 Tensor 图像)
-    tensor_images = [torch.randn(64, 64, 3) for _ in range(3)] #  创建 3 个随机 Tensor 图像 (灰度图)
+    # Corresponding names for the models/experiments
+    model_display_names = ['RGB(3 channels)', 'RGB-D(6 channels)', 'RGB-D(30 channels)']
 
-    fused_image_tensor = cosine_similarity_fuse_v3_gpu(tensor_images, check=csf_viewer_v2)
-    print("Fused image (Tensor) type:", type(fused_image_tensor))
-
-    # 显示 Tensor 图像 (需要转换为 NumPy for matplotlib)
-    plt.imshow(fused_image_tensor.cpu().numpy(), cmap='gray')
-    plt.title('Fused Image (Tensor Input)')
-    plt.show()
+    # To display the plot:
+    plot_multiple_training_metrics_separated(json_files, model_display_names, output_dir=output_dir)
