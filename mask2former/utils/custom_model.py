@@ -68,6 +68,7 @@ class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
             self.feature_fuser = FeatureFuser()
         else: # RGB-D (30 channel)
             self.depth_encoder = load_backbone(config)
+            self.feature_fuser = FeatureFuser()
             self.dsam1 = DSAModule(in_channels=96, out_channels=96, num_depth_regions=3)
             self.dsam2 = DSAModule(in_channels=96, out_channels=96, num_depth_regions=3)
             self.dsam3 = DSAModule(in_channels=96, out_channels=192, num_depth_regions=3)
@@ -99,22 +100,6 @@ class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
             rgb_backbone_features = self.encoder(color_input).feature_maps # torch.Tensor
             cp_rgb_backbone_features = list(rgb_backbone_features)
 
-            # reverse_image_processor
-            # ahe = [self.reverse_image_processor(i, self.image_processor) for i in ahe]
-            # laplace = [self.reverse_image_processor(i, self.image_processor) for i in laplace]
-            # gaussian = [self.reverse_image_processor(i, self.image_processor) for i in gaussian]
-            #
-            # decimation = [self.reverse_image_processor(i, self.image_processor) for i in decimation]
-            # rs = [self.reverse_image_processor(i, self.image_processor) for i in rs]
-            # spatial = [self.reverse_image_processor(i, self.image_processor) for i in spatial]
-            # hole_filling = [self.reverse_image_processor(i, self.image_processor) for i in hole_filling]
-            #
-            # # ICSFer
-            # fused_img_batch1 = [cosine_similarity_fuse_v3_gpu([i, j, k], check=None)
-            #                     for i, j, k in zip(ahe, laplace, gaussian)]
-            # fused_img_batch2 = [cosine_similarity_fuse_v3_gpu([i, j, k, l], check=None)
-            #                     for i, j, k, l in zip(decimation, rs, spatial, hole_filling)]
-
             # DSAM
             dsam_output1 = [self.dsam1(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(cp_rgb_backbone_features[0], ahe)] # [B, 96, 64, 64]
             dsam_output1 = torch.stack(dsam_output1, dim=0).squeeze()  # [B, 96, 64, 64]
@@ -124,7 +109,6 @@ class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
             dsam_output3 = torch.stack(dsam_output3, dim=0).squeeze()  # [B, 192, 32, 32]
             cp_rgb_backbone_features[1] += dsam_output3
 
-
             dsam_output4 = [self.dsam4(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(cp_rgb_backbone_features[1], fused_img_batch1)] # [B, 192, 32, 32]
             dsam_output4 = torch.stack(dsam_output4, dim=0).squeeze()  # [B, 384, 16, 16]
             cp_rgb_backbone_features[2] += dsam_output4
@@ -133,17 +117,13 @@ class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
             dsam_output5 = torch.stack(dsam_output5, dim=0).squeeze()  # [B, 768, 16, 16]
             cp_rgb_backbone_features[3] += dsam_output5
 
-            # depth backbone
-            # eq = self.to_grayscale(eq).to('cpu')
-            # lt = self.to_grayscale(lt).to('cpu')
-            # fused_img_batch1 = [self.to_grayscale(self.apply_image_processor(i, self.image_processor)).squeeze(1) for i in fused_img_batch1]
-            # fused_img_batch1 = torch.stack(fused_img_batch1, dim=0).to('cpu')
-            # depth_input = torch.stack([eq, lt, fused_img_batch1], dim=1).squeeze()
             depth_backbone_features = self.depth_encoder(depth_input).feature_maps
             cp_depth_backbone_features = list(depth_backbone_features)
 
-            backbone_features = tuple(cp_rgb_backbone_features)
             # TODO: 目前丢弃了 Depth Backbone数据流，仅使用融合的EGB Depth Backbone数据流进入Decoder
+            # backbone_features = tuple(cp_rgb_backbone_features)
+
+            backbone_features = self.feature_fuser(cp_rgb_backbone_features, cp_depth_backbone_features)
 
         decoder_output = self.decoder(backbone_features, output_hidden_states=output_hidden_states)
 
