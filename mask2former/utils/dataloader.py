@@ -44,24 +44,27 @@ def dataloader(args, image_processor):
         transform_rgbd = partial(
             rgbd_aug_and_trans, transform=train_augment_and_transform, image_processor=image_processor
         )
-        dataset["train"] = dataset["train"].map(transform_rgbd)
-        dataset["validation"] = dataset["validation"].map(transform_rgbd)
+        dataset["train"] = dataset["train"].map(transform_rgbd, num_proc=4)
+        dataset["validation"] = dataset["validation"].map(transform_rgbd, num_proc=4)
 
     elif args.rgb_d == 'ultra': # RGB-D(30 channel)
         dataset = dataset.cast_column("image", [IMG()])
         transform_rgbd_ultra = partial(
             rgbd_ultra_aug_and_trans, transform=train_augment_and_transform, image_processor=image_processor
         )
-        dataset["train"] = dataset["train"].map(transform_rgbd_ultra)
-        dataset["validation"] = dataset["validation"].map(transform_rgbd_ultra)
+        dataset["train"] = dataset["train"].map(transform_rgbd_ultra, num_proc=4)
+        dataset["validation"] = dataset["validation"].map(transform_rgbd_ultra, num_proc=4)
 
     else:  # RGB only(3 channel)
         transform_rgb = partial(
             rgb_aug_and_trans, transform=train_augment_and_transform, image_processor=image_processor
         )
         dataset = dataset.cast_column("image", IMG())
-        dataset["train"] = dataset["train"].map(transform_rgb)
-        dataset["validation"] = dataset["validation"].map(transform_rgb)
+        dataset["train"] = dataset["train"].map(transform_rgb, num_proc=4)
+        dataset["validation"] = dataset["validation"].map(transform_rgb, num_proc=4)
+
+    dataset["train"].set_format(type="torch")
+    dataset["validation"].set_format(type="torch")
 
     return dataset, label2id, id2label
 
@@ -88,9 +91,9 @@ def augment_and_transform_batch(
 
 def rgb_aug_and_trans(example, transform, image_processor):
     # Resize image
-    size = (256, 256)
-    example["image"] = example["image"].resize(size, Image.BILINEAR)
-    example["annotation"] = example["annotation"].resize(size, Image.NEAREST)
+    # size = (256, 256)
+    # example["image"] = example["image"].resize(size, Image.BILINEAR)
+    # example["annotation"] = example["annotation"].resize(size, Image.NEAREST)
     semantic_and_instance_masks = np.array(example["annotation"])[..., :2]
     image = np.array(example["image"])
     output = transform(image=image, mask=semantic_and_instance_masks)
@@ -120,12 +123,12 @@ def rgb_aug_and_trans(example, transform, image_processor):
 
 def rgbd_aug_and_trans(example, transform, image_processor):
     # Resize image
-    size = (256, 256)
+    # size = (256, 256)
     assert len(example["image"]) >= 2, "the dataset not include multi-modal image, but the param of rgb_d in config.json was multi/ultra"
     example["image"] = [example["image"][0], example["image"][1].convert('RGB')]
-    example["image"] = [image.resize(size, Image.BILINEAR) for image in example["image"]]
+    # example["image"] = [image.resize(size, Image.BILINEAR) for image in example["image"]]
     # Resize annotation (use NEAREST to preserve label values)
-    example["annotation"] = example["annotation"].resize(size, Image.NEAREST)
+    # example["annotation"] = example["annotation"].resize(size, Image.NEAREST)
 
     image = np.array(example["image"])
     image = image.transpose(1, 2, 0, 3).reshape(image.shape[1], image.shape[2], -1)
@@ -245,15 +248,11 @@ def collate_fn(examples):
 
 def collate_fn_v2(examples): # 修改后的 collate_fn
     batch = {}
-    pixel_values_list = [example["pixel_values"] for example in examples]
-    class_labels_list = [example["class_labels"] for example in examples]
-    mask_labels_list = [example["mask_labels"] for example in examples]
-
-    # 在 collate_fn 中进行 tensor 转换和 stack
-    batch["pixel_values"] = torch.stack([torch.tensor(pv) for pv in pixel_values_list])
-    batch["class_labels"] = [torch.tensor(cl) for cl in class_labels_list] # 可以选择 stack 或保持 list of tensors
-    batch["mask_labels"] = [torch.tensor(ml) for ml in mask_labels_list] # 可以选择 stack 或保持 list of tensors
+    batch["pixel_values"] = torch.stack([example["pixel_values"] for example in examples])
+    batch["class_labels"] = [example["class_labels"] for example in examples]
+    batch["mask_labels"] = [example["mask_labels"] for example in examples] # 可以选择 stack 或保持 list of tensors
 
     if "pixel_mask" in examples[0]:
         batch["pixel_mask"] = torch.stack([example["pixel_mask"] for example in examples])
+
     return batch
