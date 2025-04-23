@@ -102,19 +102,19 @@ class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
 
             # DSAM
             dsam_output1 = [self.dsam1(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(cp_rgb_backbone_features[0], ahe)] # [B, 96, 64, 64]
-            dsam_output1 = torch.stack(dsam_output1, dim=0).squeeze()  # [B, 96, 64, 64]
+            dsam_output1 = torch.stack(dsam_output1, dim=0).squeeze(1)  # [B, 96, 64, 64]
             dsam_output2 = [self.dsam2(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(dsam_output1, laplace)] # [B, 96, 64, 64]
-            dsam_output2 = torch.stack(dsam_output2, dim=0).squeeze()  # [B, 96, 64, 64]
+            dsam_output2 = torch.stack(dsam_output2, dim=0).squeeze(1)  # [B, 96, 64, 64]
             dsam_output3 = [self.dsam3(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(dsam_output2, gaussian)] # [B, 96, 64, 64]
-            dsam_output3 = torch.stack(dsam_output3, dim=0).squeeze()  # [B, 192, 32, 32]
+            dsam_output3 = torch.stack(dsam_output3, dim=0).squeeze(1)  # [B, 192, 32, 32]
             cp_rgb_backbone_features[1] += dsam_output3
 
             dsam_output4 = [self.dsam4(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(cp_rgb_backbone_features[1], fused_img_batch1)] # [B, 192, 32, 32]
-            dsam_output4 = torch.stack(dsam_output4, dim=0).squeeze()  # [B, 384, 16, 16]
+            dsam_output4 = torch.stack(dsam_output4, dim=0).squeeze(1)  # [B, 384, 16, 16]
             cp_rgb_backbone_features[2] += dsam_output4
 
             dsam_output5 = [self.dsam5(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(rgb_backbone_features[2], fused_img_batch2)] # [B, 384, 16, 16]
-            dsam_output5 = torch.stack(dsam_output5, dim=0).squeeze()  # [B, 768, 16, 16]
+            dsam_output5 = torch.stack(dsam_output5, dim=0).squeeze(1)  # [B, 768, 16, 16]
             cp_rgb_backbone_features[3] += dsam_output5
 
             depth_backbone_features = self.depth_encoder(depth_input).feature_maps
