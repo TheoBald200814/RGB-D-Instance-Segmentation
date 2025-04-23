@@ -210,7 +210,6 @@ def rgbd_ultra_aug_and_trans(example, transform, image_processor):
 
 def rgbd_ultra_preprocess(image):
     # (batch, 30, H, W) [RGB, DECIMATION, RS, SPATIAL, HOLE_FILLING, AHE, LAPLACE, GAUSSIAN, EQ, LT]
-    print("basic_test")
 
     decimation = image[..., 3:6]
     rs = image[..., 6:9]
