@@ -87,8 +87,7 @@ def main():
         label2id=label2id,
         id2label=id2label,
         ignore_mismatched_sizes=True,
-        rgb_d=args.rgb_d,
-        image_processor=image_processor
+        rgb_d=args.rgb_d
     )
 
     # Load evaluator

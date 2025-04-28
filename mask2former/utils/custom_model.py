@@ -1,5 +1,3 @@
-
-from typing import List, Optional
 import random
 import numpy as np
 import torch
@@ -10,8 +8,7 @@ from transformers.models.mask2former.modeling_mask2former import Mask2FormerPixe
     Mask2FormerForUniversalSegmentationOutput, Mask2FormerPixelLevelModuleOutput
 from transformers.utils.backbone_utils import load_backbone
 from mask2former.utils.data_process import calculate_depth_histogram, select_depth_distribution_modes, \
-    define_depth_interval_windows, generate_depth_region_masks, cosine_similarity_fuse_v3, csf_viewer_v2, \
-    cosine_similarity_fuse_v3_gpu
+    define_depth_interval_windows, generate_depth_region_masks
 
 
 # 固定随机种子
@@ -36,41 +33,43 @@ class CustomConfig(Mask2FormerConfig):
 
 class CustomMask2FormerModel(Mask2FormerModel):
     main_input_name = "pixel_values"
-    def __init__(self, config, rgb_d, image_processor):
+    def __init__(self, config, rgb_d):
         print("[CustomMask2FormerModel] constructing...")
         super().__init__(config)
-        self.pixel_level_module = CustomMask2FormerPixelLevelModule(config, rgb_d=rgb_d, image_processor=image_processor)
+        self.pixel_level_module = CustomMask2FormerPixelLevelModule(config, rgb_d=rgb_d)
 
 
 class CustomMask2FormerForUniversalSegmentation(Mask2FormerForUniversalSegmentation):
     main_input_name = "pixel_values"
     config_class = CustomConfig
 
-    def __init__(self, config, rgb_d='single', image_processor=None):
+    def __init__(self, config, rgb_d='single'):
         print("[CustomMask2FormerForUniversalSegmentation] constructing...")
         super().__init__(config)
         set_seed(42)
-        self.model = CustomMask2FormerModel(config, rgb_d=rgb_d, image_processor=image_processor)
+        self.model = CustomMask2FormerModel(config, rgb_d=rgb_d)
 
 
 class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
     main_input_name = "pixel_values"
-    def __init__(self, config, rgb_d, image_processor):
+    def __init__(self, config, rgb_d):
         print("[CustomMask2FormerPixelLevelModule] constructing...")
         super().__init__(config)
         self.rgb_d = rgb_d
-        self.image_processor = image_processor
         print(f"[CustomMask2FormerPixelLevelModule] rgb_d={self.rgb_d}")
         if self.rgb_d == 'single': # RGB (3 channel)
             pass # use super().encoder
+
         elif self.rgb_d == 'multi': # RGB-D (6 channel)
+            # self.depth_encoder = AutoBackbone.from_pretrained("microsoft/resnet-50")
             self.depth_encoder = load_backbone(config)
             self.feature_fuser = FeatureFuser()
+
         else: # RGB-D (30 channel)
             self.depth_encoder = load_backbone(config)
             self.feature_fuser = FeatureFuser()
-            self.dsam1 = DSAModule(in_channels=96, out_channels=96, num_depth_regions=3)
-            self.dsam2 = DSAModule(in_channels=96, out_channels=96, num_depth_regions=3)
+            # self.dsam1 = DSAModule(in_channels=96, out_channels=96, num_depth_regions=3)
+            # self.dsam2 = DSAModule(in_channels=96, out_channels=96, num_depth_regions=3)
             self.dsam3 = DSAModule(in_channels=96, out_channels=192, num_depth_regions=3)
             self.dsam4 = DSAModule(in_channels=192, out_channels=384, num_depth_regions=3)
             self.dsam5 = DSAModule(in_channels=384, out_channels=768, num_depth_regions=3)
@@ -92,20 +91,20 @@ class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
             fused_img_batch1 = pixel_values[:, 3:6, :, :]
             fused_img_batch2 = pixel_values[:, 6:9, :, :]
             depth_input = pixel_values[:, 9:12, :, :]
-            ahe = pixel_values[:, 12:15, :, :]
-            laplace = pixel_values[:, 15:18, :, :]
-            gaussian = pixel_values[:, 18:21, :, :]
+            # ahe = pixel_values[:, 12:15, :, :]
+            # laplace = pixel_values[:, 15:18, :, :]
+            # gaussian = pixel_values[:, 18:21, :, :]
 
             # rgb backbone
             rgb_backbone_features = self.encoder(color_input).feature_maps # torch.Tensor
             cp_rgb_backbone_features = list(rgb_backbone_features)
 
             # DSAM
-            dsam_output1 = [self.dsam1(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(cp_rgb_backbone_features[0], ahe)] # [B, 96, 64, 64]
-            dsam_output1 = torch.stack(dsam_output1, dim=0).squeeze(1)  # [B, 96, 64, 64]
-            dsam_output2 = [self.dsam2(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(dsam_output1, laplace)] # [B, 96, 64, 64]
-            dsam_output2 = torch.stack(dsam_output2, dim=0).squeeze(1)  # [B, 96, 64, 64]
-            dsam_output3 = [self.dsam3(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(dsam_output2, gaussian)] # [B, 96, 64, 64]
+            # dsam_output1 = [self.dsam1(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(cp_rgb_backbone_features[0], ahe)] # [B, 96, 64, 64]
+            # dsam_output1 = torch.stack(dsam_output1, dim=0).squeeze(1)  # [B, 96, 64, 64]
+            # dsam_output2 = [self.dsam2(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(dsam_output1, laplace)] # [B, 96, 64, 64]
+            # dsam_output2 = torch.stack(dsam_output2, dim=0).squeeze(1)  # [B, 96, 64, 64]
+            dsam_output3 = [self.dsam3(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(cp_rgb_backbone_features[0], fused_img_batch1)] # [B, 96, 64, 64]
             dsam_output3 = torch.stack(dsam_output3, dim=0).squeeze(1)  # [B, 192, 32, 32]
             cp_rgb_backbone_features[1] += dsam_output3
 
@@ -120,9 +119,7 @@ class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
             depth_backbone_features = self.depth_encoder(depth_input).feature_maps
             cp_depth_backbone_features = list(depth_backbone_features)
 
-            # TODO: 目前丢弃了 Depth Backbone数据流，仅使用融合的EGB Depth Backbone数据流进入Decoder
-            # backbone_features = tuple(cp_rgb_backbone_features)
-
+            # combine the features of rgb and depth
             backbone_features = self.feature_fuser(cp_rgb_backbone_features, cp_depth_backbone_features)
 
         decoder_output = self.decoder(backbone_features, output_hidden_states=output_hidden_states)
@@ -246,148 +243,6 @@ class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
         else:
             raise TypeError("Input image_data must be a NumPy ndarray or a PyTorch Tensor.")
 
-    def reverse_image_processor(self, processed_tensor, image_processor):
-        """
-        反向 image_processor 的预处理操作，将处理后的 Tensor 转换为 OpenCV 可视化的 NumPy 图像。
-
-        Args:
-            processed_tensor (torch.Tensor): 经过 image_processor 处理的 Tensor (例如，模型的中间层输出).
-                                            假设形状为 [B, C, H, W] 或 [C, H, W].
-            image_processor (transformers.AutoImageProcessor): 用于前向预处理的 AutoImageProcessor 实例.
-
-        Returns:
-            numpy.ndarray: 反向处理后的 NumPy 图像，形状为 (H, W, C) 或 (H, W)，数据类型为 uint8，
-                           可以直接使用 OpenCV (cv2.imshow) 显示.
-                           如果输入是 Batch Tensor，则返回 NumPy 图像列表。
-                           如果反向处理失败或输入类型不支持，返回 None.
-        """
-        if not isinstance(processed_tensor, torch.Tensor):
-            print("Error: Input processed_tensor must be a PyTorch Tensor.")
-            return None
-
-        if not isinstance(image_processor, Mask2FormerImageProcessor):
-            print("Error: image_processor must be an instance of transformers.AutoImageProcessor.")
-            return None
-
-        # 1. 移除 Batch 维度 (如果存在) 并移动到 CPU
-        if processed_tensor.ndim == 4:  # Batch Tensor
-            is_batched = True
-            tensor_to_reverse = processed_tensor.squeeze(0).cpu()  # 假设 Batch size = 1, 移除 Batch 维度
-        elif processed_tensor.ndim == 3:  # 单张图像 Tensor
-            is_batched = False
-            tensor_to_reverse = processed_tensor.cpu()
-        else:
-            print(f"Error: Input Tensor ndim={processed_tensor.ndim}, expected 3 or 4.")
-            return None
-
-        # 2. 反向 Normalization (如果 image_processor 进行了 Normalization)
-        if hasattr(image_processor, 'image_mean') and hasattr(image_processor, 'image_std'):
-            mean = torch.tensor(image_processor.image_mean).reshape(-1, 1, 1)  # 调整形状以匹配广播
-            std = torch.tensor(image_processor.image_std).reshape(-1, 1, 1)
-            tensor_to_reverse = tensor_to_reverse * std + mean
-
-        # 3. Clamp 像素值到 [0, 1] 范围 (或 [0, 255] 如果原始 processor 是针对 0-255 范围的)
-        tensor_to_reverse = torch.clamp(tensor_to_reverse, 0, 1)  # 假设 processor 目标范围是 0-1, 常见于 Normalize
-
-        # 4. 将 Tensor 转换为 NumPy array, 并调整通道顺序为 OpenCV 默认的 BGR (如果需要，且假设是 RGB 模型)
-        image_np = tensor_to_reverse.permute(1, 2, 0).numpy()  # C, H, W  ->  H, W, C
-
-        if image_np.shape[-1] == 3:  # 如果是彩色图像 (假设是 RGB)
-            image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)  # 转换为 BGR for OpenCV (如果模型是 RGB 且 OpenCV 默认 BGR)
-
-        # 5. 缩放到 0-255 范围并转换为 uint8 数据类型 (OpenCV 显示要求)
-        image_np = (image_np * 255).astype(np.uint8)
-
-        if is_batched:  # 如果原始输入是 Batch Tensor，则返回图像列表 (目前只处理 Batch size=1)
-            return [image_np]  # 返回列表以保持接口一致性
-        else:
-            return image_np
-
-    def apply_image_processor(self, image_np, image_processor):
-        """
-        对 NumPy 图像数据应用 image_processor 的前向预处理，转换为 Tensor 数据。
-
-        Args:
-            image_np (numpy.ndarray): 输入的 NumPy 图像数据，形状可以是 (H, W, C) 或 (H, W) 或 (C, H, W) 等，
-                                      具体取决于 image_processor 的期望输入。
-            image_processor (transformers.PreTrainedImageProcessor): 要应用的 PreTrainedImageProcessor 实例
-                                                                   (例如 AutoImageProcessor 或 Mask2FormerImageProcessor).
-
-        Returns:
-            torch.Tensor: 经过 image_processor 处理后的 Tensor 数据，形状和数据类型由 image_processor 决定。
-                          如果输入类型不支持或处理失败，返回 None.
-        """
-        if not isinstance(image_np, np.ndarray):
-            print("Error: Input image_np must be a NumPy ndarray.")
-            return None
-
-        if not isinstance(image_processor, Mask2FormerImageProcessor):  # 使用 PreTrainedImageProcessor 进行类型检查
-            print("Error: image_processor must be an instance of transformers.PreTrainedImageProcessor.")
-            return None
-
-        try:
-            # ImageProcessor 期望的输入格式可能是 PIL Image, NumPy array, 或者 list of images.
-            # 这里我们尝试直接传入 NumPy array，并假设 image_processor 接受这种格式.
-            # 不同的 image_processor 可能对输入格式有不同的要求，需要查阅具体 image_processor 的文档.
-
-            processed_inputs = image_processor(images=image_np,
-                                               return_tensors="pt")  # return_tensors="pt" 确保返回 PyTorch Tensor
-
-            #  大多数 ImageProcessor 返回一个字典，其中 'pixel_values' 键对应处理后的 Tensor
-            if 'pixel_values' in processed_inputs:
-                processed_tensor = processed_inputs.pixel_values
-                return processed_tensor
-            else:
-                print("Error: image_processor did not return 'pixel_values' in its output.")
-                return None
-
-        except Exception as e:
-            print(f"Error during image_processor application: {e}")
-            return None
-
-    def reverse_image_processor_gpu(self, processed_tensor, image_processor):
-        """
-        反向 image_processor 的预处理操作，直接在 Tensor 上处理并返回 Tensor。
-
-        Args:
-            processed_tensor (torch.Tensor): 经过 image_processor 处理的 Tensor (例如，模型的中间层输出).
-                                            假设形状为 [B, C, H, W] 或 [C, H, W].
-            image_processor (transformers.PreTrainedImageProcessor): 用于前向预处理的 PreTrainedImageProcessor 实例.
-
-        Returns:
-            torch.Tensor: 反向处理后的 Tensor，形状与输入 processed_tensor 移除 batch 维度后一致 (C, H, W).
-                          如果反向处理失败或输入类型不支持，返回 None.
-        """
-        if not isinstance(processed_tensor, torch.Tensor):
-            print("Error: Input processed_tensor must be a PyTorch Tensor.")
-            return None
-
-        if not isinstance(image_processor, Mask2FormerImageProcessor):  # 使用 PreTrainedImageProcessor 进行类型检查
-            print("Error: image_processor must be an instance of transformers.PreTrainedImageProcessor.")
-            return None
-
-        # 1. 移除 Batch 维度 (如果存在) -  **保持在原始设备上**
-        if processed_tensor.ndim == 4:  # Batch Tensor
-            tensor_to_reverse = processed_tensor.squeeze(0)  # 假设 Batch size = 1, 移除 Batch 维度
-        elif processed_tensor.ndim == 3:  # 单张图像 Tensor
-            tensor_to_reverse = processed_tensor
-        else:
-            print(f"Error: Input Tensor ndim={processed_tensor.ndim}, expected 3 or 4.")
-            return None
-
-        # 2. 反向 Normalization (如果 image_processor 进行了 Normalization) - **保持在原始设备上**
-        if hasattr(image_processor, 'image_mean') and hasattr(image_processor, 'image_std'):
-            mean = torch.tensor(image_processor.image_mean).reshape(-1, 1, 1).to(tensor_to_reverse.device)  # 移动到相同设备
-            std = torch.tensor(image_processor.image_std).reshape(-1, 1, 1).to(tensor_to_reverse.device)  # 移动到相同设备
-            tensor_to_reverse.mul_(std).add_(
-                mean)  # 使用 in-place 操作: *= 和 +=  (等价于 tensor_to_reverse = tensor_to_reverse * std + mean)
-
-        # 3. Clamp 像素值到 [0, 1] 范围 (或 [0, 255] 如果原始 processor 是针对 0-255 范围的) - **保持在原始设备上**
-        tensor_to_reverse.clamp_(0,
-                                 1)  # 使用 in-place clamp_ 操作 (等价于 tensor_to_reverse = torch.clamp(tensor_to_reverse, 0, 1))
-
-        # 4. 返回 Tensor，形状为 (C, H, W) - **保持在原始设备上，保持 Tensor 类型**
-        return tensor_to_reverse
 
 class FeatureFuser(nn.Module):
     def __init__(self):
@@ -420,16 +275,88 @@ class FeatureFuser(nn.Module):
             torch.Size([1, 384, 16, 16]),
             torch.Size([1, 768, 8, 8])
         ]
-        # TODO: DEBUG this assert
-        # for c, d, size in zip(color_feature_map, depth_feature_map, size_list):
-        #     assert c.shape == d.shape == size, \
-        #         (f"the shape of color_feature_map and depth_feature_map should be the same, and both of them should be equal to the {size}."
-        #          f"But color_feature_map.shape == {c.shape}, depth_feature_map.shape == {d.shape}")
 
-        # merged_map = [torch.cat([color_feature_map[i], depth_feature_map[i]], dim=1) for i in range(len(depth_feature_map))]
-        # fused_map = [self.fuse_conv[i](merged_map[i]) for i in range(len(merged_map))]
         merged_map = [torch.cat([c, d], dim=1) for c, d in zip(color_feature_map, depth_feature_map)]
         fused_map = [conv(m) for conv, m in zip(self.fuse_conv, merged_map)]
+
+        return fused_map
+
+
+class SpatialAttention(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+        # 注意力图的生成只依赖于空间信息，因此这里的 in_channels 实际上并不直接影响 conv 的输入通道数
+        # conv 的输入通道数始终是平均池化和最大池化结果的拼接，即 2
+        self.conv = nn.Conv2d(2, 1, kernel_size=1)
+        self.sigmoid = nn.Sigmoid()
+
+
+    def forward(self, x):
+        # 平均池化和最大池化
+        avg_pool = torch.mean(x, dim=1, keepdim=True)
+        max_pool, _ = torch.max(x, dim=1, keepdim=True)
+
+        # 拼接池化结果
+        concat = torch.cat([avg_pool, max_pool], dim=1)
+
+        # 通过卷积层
+        attention_map = self.conv(concat)
+        attention_map = self.sigmoid(attention_map)
+
+        return attention_map
+
+
+class FeatureFuserWithSpatialAttention(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.spatial_attentions = nn.ModuleList([
+            SpatialAttention(192),  # 拼接后通道数
+            SpatialAttention(384),
+            SpatialAttention(768),
+            SpatialAttention(1536)
+        ])
+        self.fuse_conv = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(192, 96, 1),  # 拼接后通道数作为输入
+                nn.ReLU()
+            ),
+            nn.Sequential(
+                nn.Conv2d(384, 192, 1),
+                nn.ReLU()
+            ),
+            nn.Sequential(
+                nn.Conv2d(768, 384, 1),
+                nn.ReLU()
+            ),
+            nn.Sequential(
+                nn.Conv2d(1536,768, 1),
+                nn.ReLU()
+            )
+        ])
+
+
+    def forward(self, color_feature_map, depth_feature_map):
+        assert len(color_feature_map) == len(depth_feature_map), \
+            "the tuple length of color_feature_map and depth_feature_map should be the same"
+
+        fused_map = []
+        for i, (color_feat, depth_feat) in enumerate(zip(color_feature_map, depth_feature_map)):
+            # 1. 拼接特征图
+            merged_feature = torch.cat([color_feat, depth_feat], dim=1)
+
+            # 2. 计算空间注意力权重
+            attention_map = self.spatial_attentions [i](merged_feature)
+
+            # 3. 将注意力权重分别应用到颜色和深度特征图
+            attended_color_feat = color_feat * attention_map
+            attended_depth_feat = depth_feat * attention_map
+
+            # 4. 再次拼接加权后的特征图
+            reattended_feature = torch.cat([attended_color_feat, attended_depth_feat], dim=1)
+
+            # 5. 使用 1x1 卷积压缩回原始通道数
+            fused_feature = self.fuse_conv [i](reattended_feature)
+            fused_map.append(fused_feature)
 
         return fused_map
 
