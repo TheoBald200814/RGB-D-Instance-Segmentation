@@ -10,15 +10,16 @@
 - 基于虾类图像数据，学习虾及其脏器图像区域特征，执行较为精确的实例分割任务。
 
 ## 实验清单
-| 编号  | 内容                                                                                                                              | 状态  |    日期    |
-|:---:|---------------------------------------------------------------------------------------------------------------------------------|-----|:--------:|
-| 实验一 | 测试Mask2Former各模块之间的数据传递格式(例如Backbone的input格式和output格式)                                                                          | 已完成 | 25/03/13 |
-| 实验二 | 准备小规模实验数据集，作为对照实验(使用指定seed训练)，训练标准Mask2Former模型，并得到validation数据                                                                 | 已完成 | 24/12/19 |
-| 实验三 | 继承标准模型使用的Config类、Backbone(Swin)类、Pixel decoder类、Transformer类，使用上述seed进行训练，验证得出的validation数据是否一致                                 | 已完成 | 24/12/20 |
-| 实验四 | 扩展深度数据输入流：改造数据集配置文件(.json)、load_dataset策略、augment_and_transform、CustomMask2FormerForUniversalSegmentation.forward中的pixel_calues | 已完成 | 25/03/13 |
-| 实验五 | 扩展Mask2FormerPixelLevelModule中的backbone(encoder),实现颜色数据和深度数据的分立特征提取、特征融合                                                        | 已完成 | 25_03_14 |
-| 实验六 | 构造DSA模块（深度频率统计、深度阈值分解、深度敏感注意力机制），测试本地数据集                                                                                        | 已完成 | 25/03/23 |
-| 实验七 | 构造CSF模块（余弦相似度矩阵、CSFed Image生成算法、可视化监控模块），测试本地数据集                                                                                | 已完成 | 25/03/23 |
+| 编号  | 内容                                                                                                                              | 状态  |    日期     |
+|:---:|---------------------------------------------------------------------------------------------------------------------------------|-----|:---------:|
+| 实验一 | 测试Mask2Former各模块之间的数据传递格式(例如Backbone的input格式和output格式)                                                                          | 已完成 | 25/03/13  |
+| 实验二 | 准备小规模实验数据集，作为对照实验(使用指定seed训练)，训练标准Mask2Former模型，并得到validation数据                                                                 | 已完成 | 24/12/19  |
+| 实验三 | 继承标准模型使用的Config类、Backbone(Swin)类、Pixel decoder类、Transformer类，使用上述seed进行训练，验证得出的validation数据是否一致                                 | 已完成 | 24/12/20  |
+| 实验四 | 扩展深度数据输入流：改造数据集配置文件(.json)、load_dataset策略、augment_and_transform、CustomMask2FormerForUniversalSegmentation.forward中的pixel_calues | 已完成 | 25/03/13  |
+| 实验五 | 扩展Mask2FormerPixelLevelModule中的backbone(encoder),实现颜色数据和深度数据的分立特征提取、特征融合                                                        | 已完成 | 25_03_14  |
+| 实验六 | 构造DSA模块（深度频率统计、深度阈值分解、深度敏感注意力机制），测试本地数据集                                                                                        | 已完成 | 25/03/23  |
+| 实验七 | 构造CSF模块（余弦相似度矩阵、CSFed Image生成算法、可视化监控模块），测试本地数据集                                                                                | 已完成 | 25/03/23  |
+| 实验八 | 基于实验五的“通用数据集”基准测试                                                                                                               | 已完成 | 25/03/21  |
 
 ## 实验路径
 ``` 
@@ -786,4 +787,22 @@ def cosine_similarity_fuse_v3(original_images, check=None):
 
 #### 结论
 CSF构建完毕，待集成接入主模型
+
+---
+
+### 实验八（通用数据集基准测试）
+- 数据集：archive
+- 标签："brick": 1, "rubber": 2, "concrete": 3, "wood": 4
+- 训练集：601
+- 验证集：257
+
+|    指标     |  RGB-D  |   RGB   |
+|:---------:|:-------:|:-------:|
+|   Epoch   |   100   |   100   |
+| TrainLoss | 6.1064  | 8.0953  |
+| TestLoss  | 10.9563 | 29.1223 |
+|    mAP    |  0.693  | 0.4562  |
+|  mAP_50   | 0.7948  | 0.6351  |
+|  mAP_75   | 0.7877  |  0.54   |
+
 
