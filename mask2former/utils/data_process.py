@@ -72,11 +72,24 @@ def convert_mask2grayscale(mask_path):
 
     # 创建一个查找表 (LUT) 来快速映射颜色
     lut = np.zeros((256, 256, 256), dtype=np.uint8)
-    for color, gray_value in color_to_gray_map.items():
-        lut[color] = gray_value
+    # for color, gray_value in color_to_gray_map.items():
+    #     lut[color] = gray_value
+
+    colors = np.array(list(color_to_gray_map.keys()))
+    gray_values = np.array(list(color_to_gray_map.values()), dtype=np.uint8)
+    lut[colors[:, 0], colors[:, 1], colors[:, 2]] = gray_values
 
     # 将图像转换为灰度图像
     grayscale_image = lut[mask_image[:, :, 0], mask_image[:, :, 1], mask_image[:, :, 2]]
+
+    # colorful_grayscale_image = cv2.cvtColor(grayscale_image, cv2.COLOR_GRAY2BGR)
+    # # 将图像转换为一维数组
+    # reshaped_image = colorful_grayscale_image.reshape(-1, 3)
+    #
+    # # 使用NumPy的unique函数找出所有独特的颜色
+    # unique_colors = np.unique(reshaped_image, axis=0)
+    #
+    # print(f"该图像的颜色有：{[tuple(color) for color in unique_colors]}")
 
     # # 保存结果
     # cv2.imwrite(output_path, grayscale_image)
@@ -384,9 +397,8 @@ def split2train_and_valid(image_path_list, mask_path_list, depth_path_list=None,
         return train_image_path_list, train_mask_path_list, None, valid_image_path_list, valid_mask_path_list, None
 
 
-def generate_meta_file(train_image_path_list, train_mask_path_list, train_depth_path_list, train_depth_expand_list_dict,
-                       valid_image_path_list, valid_mask_path_list, valid_depth_path_list, valid_depth_expand_list_dict,
-                       output_dir,
+def generate_meta_file(train_image_path_list, train_mask_path_list, valid_image_path_list, valid_mask_path_list, output_dir,
+                       train_depth_path_list=None, train_depth_expand_list_dict=None,  valid_depth_path_list=None, valid_depth_expand_list_dict=None,
                        semantic_class_to_id=None):
     """
     生成dataset的元数据文件（json格式，train和valid分开存放）
@@ -402,7 +414,7 @@ def generate_meta_file(train_image_path_list, train_mask_path_list, train_depth_
 
     def single_meta_data_unit(image_path_list, mask_path_list):
         data = []
-        for i in range(len(image_path_list)):
+        for i in tqdm(range(len(image_path_list))):
             data.append({
                 "image": image_path_list[i],
                 "annotation": mask_path_list[i],
@@ -413,7 +425,7 @@ def generate_meta_file(train_image_path_list, train_mask_path_list, train_depth_
 
     def multi_meta_data_unit(image_path_list, mask_path_list, depth_path_list):
         data = []
-        for i in range(len(image_path_list)):
+        for i in tqdm(range(len(image_path_list))):
             data.append({
                 "image": [image_path_list[i], depth_path_list[i]],
                 "annotation": mask_path_list[i],
@@ -424,7 +436,7 @@ def generate_meta_file(train_image_path_list, train_mask_path_list, train_depth_
 
     def ultra_meta_data_unit(image_path_list, mask_path_list, depth_expand_list_dict):
         data = []
-        for i in range(len(image_path_list)):
+        for i in tqdm(range(len(image_path_list))):
             data.append({
                 "image":[
                     image_path_list[i],
@@ -447,16 +459,24 @@ def generate_meta_file(train_image_path_list, train_mask_path_list, train_depth_
     if train_depth_expand_list_dict is not None and valid_depth_expand_list_dict is not None: # 30 channel
         train_data = ultra_meta_data_unit(train_image_path_list, train_mask_path_list, train_depth_expand_list_dict)
         valid_data = ultra_meta_data_unit(valid_image_path_list, valid_mask_path_list, valid_depth_expand_list_dict)
+
+        # Write JSON files
+        train_json_path = os.path.join(output_dir, "train_u.json")
+        valid_json_path = os.path.join(output_dir, "valid_u.json")
     elif train_depth_path_list is not None and valid_depth_path_list is not None: # 6 channel
         train_data = multi_meta_data_unit(train_image_path_list, train_mask_path_list, train_depth_path_list)
         valid_data = multi_meta_data_unit(valid_image_path_list, valid_mask_path_list, valid_depth_path_list)
+
+        # Write JSON files
+        train_json_path = os.path.join(output_dir, "train_m.json")
+        valid_json_path = os.path.join(output_dir, "valid_m.json")
     else: # 3 channel
         train_data = single_meta_data_unit(train_image_path_list, train_mask_path_list)
         valid_data = single_meta_data_unit(valid_image_path_list, valid_mask_path_list)
 
-    # Write JSON files
-    train_json_path = os.path.join(output_dir, "train.json")
-    valid_json_path = os.path.join(output_dir, "valid.json")
+        # Write JSON files
+        train_json_path = os.path.join(output_dir, "train_s.json")
+        valid_json_path = os.path.join(output_dir, "valid_s.json")
 
     with open(train_json_path, "w") as train_file:
         json.dump(train_data, train_file, indent=4)
@@ -465,43 +485,6 @@ def generate_meta_file(train_image_path_list, train_mask_path_list, train_depth_
         json.dump(valid_data, valid_file, indent=4)
 
     print(f"JSON files generated:\n  Train: {train_json_path}\n  Validation: {valid_json_path}")
-
-
-def old_dataset_constructor(image_dir, semantic_dir, instance_dir, mask_dir, output_dir, mask_check=False):
-    """
-    数据集构造器
-    :param image_dir: iamge_dir
-    :param semantic_dir: semantic_dir
-    :param instance_dir: instance_dir
-    :param mask_dir: mask_dir
-    :param output_dir: output_dir
-    :param mask_check: 是否需要做标签可视化检查
-    """
-    assert os.path.isdir(image_dir), f"{image_dir} 不存在"
-    assert os.path.isdir(semantic_dir), f"{semantic_dir} 不存在"
-    assert os.path.isdir(instance_dir), f"{mask_dir} 不存在"
-    assert os.path.isdir(output_dir), f"{output_dir} 不存在"
-    assert len(os.listdir(mask_dir)) == 0, f"{mask_dir} 不为空，妨碍mask存储"
-
-    semantic_name_list = get_image_name_list(semantic_dir)
-    instance_name_list = get_image_name_list(instance_dir)
-    assert semantic_name_list == instance_name_list, "sematic mask 和 instance mask不匹配"
-    for mask_name in tqdm(semantic_name_list):
-        sematic_path = os.path.join(semantic_dir, mask_name)
-        instance_path = os.path.join(instance_dir, mask_name)
-        mask = combine_sematic_instance_mask(sematic_path, instance_path)
-        save_path = os.path.join(mask_dir, mask_name)
-        cv2.imwrite(save_path, mask)
-
-    mask_path_list = [os.path.join(mask_dir, mask_name) for mask_name in get_image_name_list(mask_dir)]
-    image_path_list = [os.path.join(image_dir, image_name) for image_name in get_image_name_list(image_dir)]
-    assert all(os.path.splitext(os.path.basename(image_path))[0] == os.path.splitext(os.path.basename(mask_path))[0]
-               for image_path, mask_path in zip(image_path_list, mask_path_list)), "image 和 mask 不匹配"
-    if mask_check:
-        label_check(image_path_list, mask_path_list)
-
-    train_image_path_list, train_mask_path_list, valid_image_path_list, valid_mask_path_list = split2train_and_valid(image_path_list, mask_path_list)
-    generate_meta_file(train_image_path_list, train_mask_path_list, valid_image_path_list, valid_mask_path_list, output_dir)
 
 
 def load_coco_annotations(json_path: str) -> Tuple[Dict, Dict]:
@@ -632,9 +615,14 @@ def dataset_constructor(image_dir, mask_dir, output_dir, mask_check=True, data_f
 
     train_image_path_list, train_mask_path_list, train_depth_path_list, valid_image_path_list, valid_mask_path_list, valid_depth_path_list = split2train_and_valid(
         image_path_list, mask_path_list, depth_path_list)
-    generate_meta_file(train_image_path_list, train_mask_path_list, train_depth_path_list,
-                       valid_image_path_list, valid_mask_path_list, valid_depth_path_list,
-                       output_dir)
+
+    generate_meta_file(train_image_path_list=train_image_path_list,
+                       train_mask_path_list=train_mask_path_list,
+                       valid_image_path_list=valid_image_path_list,
+                       valid_mask_path_list=valid_mask_path_list,
+                       output_dir=output_dir,
+                       train_depth_path_list=train_depth_path_list,
+                       valid_depth_path_list=valid_depth_path_list)
 
 
 def calculate_depth_histogram(depth_map, bins=512, value_range=None):
@@ -826,270 +814,6 @@ def cosine_similarity(image_A, image_B):
     return similarity_map_np  # 返回 NumPy array 格式的相似度图
 
 
-def cosine_similarity_gpu(image_A, image_B):
-    """
-    计算图像像素级别的余弦相似度图，向量化版本，效率更高。
-    **原生兼容 NumPy array 和 PyTorch Tensor 输入，并根据输入类型返回相应类型的结果。**
-    特殊处理两个像素向量都为零向量的情况，返回相似度 1.0。
-    使用 float32 数据类型进行计算，避免 uint8 溢出问题。
-
-    参数:
-    image_A (numpy.ndarray or torch.Tensor): 图像 A, 形状 (H, W, C) 或 (H, W)  (灰度图), dtype 可以是 uint8 或其他。
-    image_B (numpy.ndarray or torch.Tensor): 图像 B, 形状 (H, W, C') 或 (H, W) (灰度图)。
-                                图像 A 和 图像 B 需要 resize 到相同的 Height 和 Width。
-
-    返回值:
-    numpy.ndarray or torch.Tensor: 像素级别的余弦相似度图, 形状 (H, W), dtype=float32。
-                   每个像素值表示对应位置的余弦相似度得分，范围在 [-1, 1] 之间。
-                   **返回类型与输入 image_A 类型一致 (NumPy array 或 PyTorch Tensor)。**
-    """
-
-    is_tensor_input = isinstance(image_A, torch.Tensor) # 判断输入是否为 Tensor
-    xp = torch if is_tensor_input else np # 根据输入类型选择对应的库 (torch 或 numpy)
-    array_type = torch.float32 if is_tensor_input else np.float32
-    float_type = torch.float32 if is_tensor_input else np.float32 # 统一使用 float32
-
-    # 1. 转换为 float32 数据类型
-    image_A_float = image_A.to(float_type) if is_tensor_input else image_A.astype(float_type)
-    image_B_float = image_B.to(float_type) if is_tensor_input else image_B.astype(float_type)
-
-    # 2. 向量化计算点积 (pixel-wise dot product)
-    dot_product_map = xp.sum(image_A_float * image_B_float, axis=-1, keepdims=False)
-
-    # 3. 向量化计算 L2 范数 (pixel-wise norm)
-    norm_A_map = xp.linalg.norm(image_A_float, axis=-1, keepdims=False) if not is_tensor_input else xp.norm(image_A_float, dim=-1, keepdim=False) # 兼容 Tensor 的 norm 写法
-    norm_B_map = xp.linalg.norm(image_B_float, axis=-1, keepdims=False) if not is_tensor_input else xp.norm(image_B_float, dim=-1, keepdim=False) # 兼容 Tensor 的 norm 写法
-
-
-    # 4. 向量化计算余弦相似度 (避免除以零)
-    similarity_map = xp.zeros_like(dot_product_map, dtype=float_type)
-
-    # 找到分母不为零的位置
-    valid_denominator_mask = (norm_A_map * norm_B_map) != 0
-
-    # 在分母不为零的位置，计算余弦相似度
-    similarity_map[valid_denominator_mask] = (
-        dot_product_map[valid_denominator_mask] / (norm_A_map[valid_denominator_mask] * norm_B_map[valid_denominator_mask])
-    )
-
-    # **[可选] 特殊处理：两个像素向量都为零向量的情况，设置为 1.0 (如果需要)**
-    zero_vector_mask = (norm_A_map == 0) & (norm_B_map == 0)
-    similarity_map[zero_vector_mask] = 1.0
-
-    return similarity_map # 返回类型与输入 image_A 类型一致 (NumPy array 或 PyTorch Tensor)
-
-
-def cosine_similarity_fuse_v1(original_images):
-    """
-    Implements the Cosine Similarity Fuse (CSF) algorithm to fuse multiple images.
-
-    Args:
-        original_images (list of numpy.ndarray): A list of N original images (O_N).
-                                                Images should have the same height and width.
-
-    Returns:
-        numpy.ndarray: The fused image.
-    """
-    num_images = len(original_images)
-    if num_images <= 1:
-        return original_images[0] if original_images else None  # Handle cases with 0 or 1 image
-
-    similarity_score_matrices_rounds = []
-    round_result_images = []
-    original_image_scores = {i: 0 for i in range(num_images)} # Initialize scores for each original image
-
-    for k_standard_index in range(num_images):
-        standard_image = original_images[k_standard_index]
-        similarity_score_matrices = []
-        compared_image_indices = [i for i in range(num_images) if i != k_standard_index]
-
-        # 1. Generate Similarity Score Matrices (for round k)
-        for compared_index in compared_image_indices:
-            compared_image = original_images[compared_index]
-            similarity_matrix = cosine_similarity(standard_image, compared_image)
-            similarity_score_matrices.append(similarity_matrix)
-        similarity_score_matrices_rounds.append(similarity_score_matrices)
-
-        # 2. Generate Round Image (B_k) and Original Image Scores
-        round_result_image_Bk = np.zeros_like(standard_image, dtype=np.float32) # Initialize B_k
-        contributing_image_counts = {i: 0 for i in compared_image_indices} # Count pixel contributions
-
-        height, width = standard_image.shape[:2]
-        for h in range(height):
-            for w in range(width):
-                max_similarity = -float('inf')
-                best_source_image_index = -1
-
-                for i, sim_matrix in enumerate(similarity_score_matrices):
-                    current_similarity = sim_matrix[h, w]
-                    if current_similarity > max_similarity:
-                        max_similarity = current_similarity
-                        best_source_image_index = compared_image_indices[i]
-
-                if best_source_image_index != -1: # Should always be true in this logic but good to check
-                    source_image = original_images[best_source_image_index]
-                    round_result_image_Bk[h, w] = source_image[h, w]
-                    contributing_image_counts[best_source_image_index] += 1
-
-        round_result_images.append(round_result_image_Bk)
-
-        # Find image C with most contribution and update score
-        max_contribution_count = -1
-        image_C_index = -1
-        for index, count in contributing_image_counts.items():
-            if count > max_contribution_count:
-                max_contribution_count = count
-                image_C_index = index
-
-        if image_C_index != -1:
-            original_image_scores[image_C_index] += max_contribution_count
-
-
-    # 4. Generate Fused Image
-    total_score = sum(original_image_scores.values())
-    if total_score == 0:
-        weights_normalized = [1.0 / num_images] * num_images # Default uniform weights if all scores are zero
-    else:
-        weights = [original_image_scores[i] for i in range(num_images)]
-        weights_normalized = [w / total_score for w in weights] # Normalize scores to weights
-
-    fused_image = np.zeros_like(original_images[0], dtype=np.float32)
-    for i in range(num_images):
-        fused_image += weights_normalized[i] * round_result_images[i]
-
-    return fused_image.astype(original_images[0].dtype) # Return fused image with original dtype
-
-
-def cosine_similarity_fuse_v2(original_images, check=None):
-    """
-    Implements the Cosine Similarity Fuse (CSF) algorithm to fuse multiple images.
-    Args:
-        original_images (list of numpy.ndarray): A list of N original images (O_N).
-        check (callable, optional): Function to visualize intermediate results. Defaults to None (no visualization).
-                                  If provided, this function will be called with a list of visualization images.
-
-    Returns:
-        numpy.ndarray: The fused image.
-    """
-    num_images = len(original_images)
-    if num_images <= 1:
-        return original_images[0] if original_images else None
-
-    similarity_score_matrices_rounds = []
-    round_result_images = []
-    original_image_scores = {i: 0 for i in range(num_images)}
-    visualization_images = [] # List to store visualization images for each round
-
-    for k_standard_index in range(num_images):
-        standard_image = original_images[k_standard_index]
-        similarity_score_matrices = []
-        compared_image_indices = [i for i in range(num_images) if i != k_standard_index]
-
-        # 1. Generate Similarity Score Matrices (for round k)
-        for compared_index in compared_image_indices:
-            compared_image = original_images[compared_index]
-            similarity_matrix = cosine_similarity(standard_image, compared_image)
-            similarity_score_matrices.append(similarity_matrix)
-        similarity_score_matrices_rounds.append(similarity_score_matrices)
-
-        round_result_image_Bk = np.zeros_like(standard_image, dtype=np.float32)
-        contributing_image_counts = {i: 0 for i in compared_image_indices}
-
-        height, width = standard_image.shape[:2]
-        for h in range(height):
-            for w in range(width):
-                max_similarity = -float('inf')
-                best_source_image_index = -1
-
-                for i, sim_matrix in enumerate(similarity_score_matrices):
-                    current_similarity = sim_matrix[h, w]
-                    if current_similarity > max_similarity:
-                        max_similarity = current_similarity
-                        best_source_image_index = compared_image_indices[i]
-
-                if best_source_image_index != -1:
-                    source_image = original_images[best_source_image_index]
-                    round_result_image_Bk[h, w] = source_image[h, w]
-                    contributing_image_counts[best_source_image_index] += 1
-
-        round_result_images.append(round_result_image_Bk)
-
-        max_contribution_count = -1
-        image_C_index = -1
-        for index, count in contributing_image_counts.items():
-            if count > max_contribution_count:
-                max_contribution_count = count
-                image_C_index = index
-
-        if image_C_index != -1:
-            original_image_scores[image_C_index] += max_contribution_count
-
-        # --- Visualization for each round if check function is provided ---
-        if check is not None: # Check if a visualization function is provided
-            round_vis_images = []
-
-            # Similarity Matrices Visualization
-            sim_matrix_vis = []
-            for sim_matrix in similarity_score_matrices:
-                sim_matrix_normalized = (sim_matrix + 1) / 2  # Normalize to 0-1
-                sim_matrix_uint8 = (sim_matrix_normalized * 255).astype(np.uint8)
-                sim_matrix_color = cv2.applyColorMap(sim_matrix_uint8, cv2.COLORMAP_JET) # Apply colormap
-                sim_matrix_vis.append(sim_matrix_color)
-            sim_matrices_row = np.hstack(sim_matrix_vis) if sim_matrix_vis else np.zeros((height, width, 3), dtype=np.uint8)
-            round_vis_images.append(sim_matrices_row)
-
-            # Pixel Contribution Visualization (Text-based for OpenCV, can be improved to bar chart image)
-            contrib_text = ""
-            for index, count in contributing_image_counts.items():
-                contrib_text += f"Image {index+1}: {count} pixels\n"
-            contrib_img = np.zeros((height, 1000, 3), dtype=np.uint8) + 255 # White background
-
-            # --- 动态计算字体参数 ---
-            base_font_scale = 0.5  # 基础字体大小 (之前的固定值)
-            base_thickness = 1      # 基础字体粗细 (之前的固定值)
-            image_height = contrib_img.shape[0] # 获取图像高度
-            dynamic_font_scale = base_font_scale * (image_height / 150.0) # 字体大小随高度线性缩放 (以高度 100 为基准)
-            dynamic_thickness = max(1, int(base_thickness * (image_height / 100.0))) # 字体粗细随高度线性缩放，且最小为 1
-
-            cv2.putText(contrib_img, "Pixel Contributions:", (100, 100), cv2.FONT_HERSHEY_SIMPLEX, dynamic_font_scale, (0, 0, 0), dynamic_thickness)
-            y_offset = int(40 * (image_height / 100.0)) # Y 轴偏移量也随高度线性缩放
-            for line in contrib_text.strip().split('\n'):
-                cv2.putText(contrib_img, line, (50, y_offset), cv2.FONT_HERSHEY_SIMPLEX, dynamic_font_scale, (0, 0, 0), dynamic_thickness)
-                y_offset += int(20 * (image_height / 100.0)) # 行间距也随高度线性缩放
-            round_vis_images.append(contrib_img)
-
-
-            # Round Result Image Visualization
-            round_result_uint8 = (np.clip(round_result_image_Bk, 0, 255)).astype(np.uint8) # Clip and convert
-            round_vis_images.append(round_result_uint8)
-
-            round_visualization = np.hstack(round_vis_images) # Horizontal stack for round visualization
-            visualization_images.append(round_visualization)
-
-    total_score = sum(original_image_scores.values())
-    if total_score == 0:
-        weights_normalized = {i: 1.0 / num_images for i in range(num_images)}  # 修正：生成字典！
-    else:
-        weights = [original_image_scores[i] for i in range(num_images)]
-        weights_normalized = {i: weights[i] / total_score for i in range(num_images)}  # 修正：生成字典！
-
-    fused_image = np.zeros_like(original_images[0], dtype=np.float32)
-    for i in range(num_images):
-        fused_image += weights_normalized[i] * round_result_images[i]
-
-    if check is not None:
-        visualization_data = {
-            'num_images': num_images,
-            'original_image_scores': original_image_scores,
-            'weights_normalized': weights_normalized,
-        }
-        visualization_images.append(visualization_data)
-
-        check(visualization_images)
-
-    return fused_image.astype(original_images[0].dtype)
-
-
 def cosine_similarity_fuse_v3(original_images, check=None):
     """
     Implements the Cosine Similarity Fuse (CSF) algorithm to fuse multiple images.
@@ -1193,194 +917,6 @@ def cosine_similarity_fuse_v3(original_images, check=None):
             pass # If check=True and no function, you can add default data printing here if needed
 
     return fused_image.astype(original_images[0].dtype) # Return fused image with original dtype
-
-
-def cosine_similarity_fuse_v3_gpu(original_images, check=None):
-    """
-    Implements the Cosine Similarity Fuse (CSF) algorithm to fuse multiple images.
-    **兼容 NumPy ndarray 和 PyTorch Tensor 输入.**
-    Includes a check parameter to collect intermediate data for visualization.
-
-    Args:
-        original_images (list of numpy.ndarray or torch.Tensor): A list of N original images (O_N).
-                                                Images should have the same height and width.
-        check (bool or function, optional): If True or a function is provided, intermediate
-                                            data will be collected and passed to the function.
-                                            Defaults to None.
-
-    Returns:
-        numpy.ndarray or torch.Tensor: The fused image, type matches input type.
-    """
-    num_images = len(original_images)
-    if num_images <= 1:
-        return original_images[0] if original_images else None  # Handle cases with 0 or 1 image
-
-    # 确定输入数据类型 (假设列表中的第一个图像的类型代表所有图像的类型)
-    is_tensor_input = isinstance(original_images[0], torch.Tensor)
-    xp = torch if is_tensor_input else np # 根据输入类型选择对应的库 (torch 或 numpy)
-    zeros_like = torch.zeros_like if is_tensor_input else np.zeros_like
-    array_type = torch.float32 if is_tensor_input else np.float32
-    input_dtype = original_images[0].dtype # 保持原始数据类型
-
-    visualization_data = { # Initialize the dictionary to store visualization data
-        'similarity_score_matrices_rounds': [],
-        'contributing_pixel_counts_rounds': [],
-        'round_result_images': [],
-        'final_scores_and_weights': {}
-    }
-
-    round_result_images = []
-    original_image_scores = {i: 0 for i in range(num_images)} # Initialize scores for each original image
-
-    for k_standard_index in range(num_images):
-        standard_image = original_images[k_standard_index]
-        similarity_score_matrices = []
-        compared_image_indices = [i for i in range(num_images) if i != k_standard_index]
-
-        # 1. Generate Similarity Score Matrices (for round k)
-        current_round_similarity_matrices = [] # Store similarity matrices for current round
-        for compared_index in compared_image_indices:
-            compared_image = original_images[compared_index]
-            similarity_matrix = cosine_similarity(standard_image, compared_image) # 直接调用兼容的 cosine_similarity 函数
-            similarity_score_matrices.append(similarity_matrix)
-            current_round_similarity_matrices.append(similarity_matrix) # Append to round list
-        visualization_data['similarity_score_matrices_rounds'].append(current_round_similarity_matrices) # Store for visualization data
-
-        # 2. Generate Round Image (B_k) and Original Image Scores
-        round_result_image_Bk = zeros_like(standard_image, dtype=array_type) # Initialize B_k
-        contributing_image_counts = {i: 0 for i in compared_image_indices} # Count pixel contributions
-
-        height, width = standard_image.shape[:2] if not is_tensor_input else standard_image.shape[-2:] # 兼容 Tensor shape 获取
-        for h in range(height):
-            for w in range(width):
-                max_similarity = -float('inf')
-                best_source_image_index = -1
-
-                for i, sim_matrix in enumerate(similarity_score_matrices):
-                    current_similarity = sim_matrix[h, w]
-                    if current_similarity > max_similarity:
-                        max_similarity = current_similarity
-                        best_source_image_index = compared_image_indices[i]
-
-                if best_source_image_index != -1: # Should always be true in this logic but good to check
-                    source_image = original_images[best_source_image_index]
-                    round_result_image_Bk[h, w] = source_image[h, w]
-                    contributing_image_counts[best_source_image_index] += 1
-
-        round_result_images.append(round_result_image_Bk)
-        visualization_data['round_result_images'].append(round_result_image_Bk) # Store round result image
-
-        visualization_data['contributing_pixel_counts_rounds'].append(contributing_image_counts) # Store contributing counts for round
-
-        # Find image C with most contribution and update score
-        max_contribution_count = -1
-        image_C_index = -1
-        for index, count in contributing_image_counts.items():
-            if count > max_contribution_count:
-                max_contribution_count = count
-                image_C_index = index
-
-        if image_C_index != -1:
-            original_image_scores[image_C_index] += max_contribution_count
-
-    # 4. Generate Fused Image
-    total_score = sum(original_image_scores.values())
-    if total_score == 0:
-        weights_normalized = [1.0 / num_images] * num_images # Default uniform weights if all scores are zero
-    else:
-        weights = [original_image_scores[i] for i in range(num_images)]
-        weights_normalized = [w / total_score for w in weights] # Normalize scores to weights
-
-    visualization_data['final_scores_and_weights']['original_image_scores'] = original_image_scores # Store final scores
-    visualization_data['final_scores_and_weights']['weights_normalized'] = weights_normalized # Store normalized weights
-
-    fused_image = zeros_like(original_images[0], dtype=array_type)
-    for i in range(num_images):
-        fused_image += weights_normalized[i] * round_result_images[i]
-
-    if check: # Check if check is True or a function is provided
-        if callable(check):
-            check(visualization_data) # Call the injected function with visualization data
-        elif check == True:
-            pass # If check=True and no function, you can add default data printing here if needed
-
-    if is_tensor_input:
-        return fused_image.to(input_dtype)  # 使用 .to() for Tensor
-    else:
-        return fused_image.astype(input_dtype)  # 使用 .astype() for NumPy
-
-
-def csf_viewer_v1(visualization_data):
-    """
-    Visualizes the intermediate data from cosine_similarity_fuse_v1.
-    (Corrected version to avoid IndexError)
-    """
-    similarity_score_matrices_rounds = visualization_data['similarity_score_matrices_rounds']
-    contributing_pixel_counts_rounds = visualization_data['contributing_pixel_counts_rounds']
-    num_rounds = len(similarity_score_matrices_rounds)
-    num_images = num_rounds # N images, N rounds
-
-    fig, axes = plt.subplots(num_rounds, num_images, figsize=(num_images * 5, num_rounds * 4))
-    fig.suptitle('Cosine Similarity Fuse - Intermediate Visualization', fontsize=16)
-
-    for round_index in range(num_rounds):
-        current_round_matrices = similarity_score_matrices_rounds[round_index]
-        current_round_contributions = contributing_pixel_counts_rounds[round_index]
-        standard_image_index = round_index
-
-        compared_image_indices_in_round = [i for i in range(num_images) if i != standard_image_index]
-
-        col_index_counter = 0 # Counter for column index in visualization grid
-
-        for image_index in range(num_images): # Iterate through all image indices for columns
-            ax = axes[round_index, image_index]
-
-            if image_index == standard_image_index:
-                # Position for standard image - leave blank
-                ax.set_xticks([])
-                ax.set_yticks([])
-                ax.set_title(f'Image {standard_image_index + 1} (Standard)')
-                ax.set_xlabel('Blank (Standard Image Position)')
-                col_index_counter += 1 # Increment column counter, even for blank space
-                continue # Skip to next image_index
-
-            # Check if current image_index is in compared_image_indices_in_round
-            if image_index in compared_image_indices_in_round:
-                # Find the index of image_index within compared_image_indices_in_round
-                compared_image_current_index = compared_image_indices_in_round.index(image_index)
-
-                sim_matrix = current_round_matrices[compared_image_current_index] # Now should be safe
-                contribution_count = current_round_contributions.get(image_index, 0)
-
-                im = ax.imshow(sim_matrix, cmap='jet', vmin=-1, vmax=1)
-                ax.set_title(f'vs Image {standard_image_index + 1}')
-                ax.set_xlabel(f'Image {image_index + 1}\nContribution: {contribution_count} pixels')
-
-                if image_index == num_images - 1: # Colorbar in last column
-                    fig.colorbar(im, ax=ax)
-            else:
-                # This should ideally not be reached, but for safety, handle it:
-                ax.set_xticks([])
-                ax.set_yticks([])
-                ax.set_title(f'Image {image_index + 1}')
-                ax.set_xlabel('No Sim Matrix')
-                print(f"Warning: No similarity matrix expected for Round {round_index + 1}, Image {image_index + 1} (Standard Image?)")
-
-            col_index_counter += 1 # Increment column counter for compared images as well
-
-
-        axes[round_index, 0].set_ylabel(f'Round {round_index + 1}') # Row label
-
-
-    # Column labels
-    for image_index in range(num_images):
-        axes[0, image_index].set_title(f'Image {image_index + 1}')
-        if image_index == standard_image_index:
-            axes[0, image_index].set_title(f'Image {image_index + 1} (Standard)')
-
-
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-    plt.show()
 
 
 def csf_viewer_v2(visualization_data):
