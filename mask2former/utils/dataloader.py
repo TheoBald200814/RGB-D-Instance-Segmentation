@@ -1,10 +1,11 @@
 from functools import partial
 
+import cv2
 import numpy as np
 import torch
 import os
 import albumentations as A
-from datasets import load_dataset, Image as IMG
+from datasets import load_dataset, Image as IMG, Value
 from .data_process import get_label2id
 from PIL import Image
 from typing import Any, Dict, List, Mapping, Optional
@@ -27,7 +28,7 @@ def dataloader(args, image_processor):
         "validation": os.path.join(args.root_path, args.valid_json_path),
     }
     dataset = load_dataset("json", data_files=data_files)
-    dataset = dataset.cast_column("annotation", IMG())
+    dataset = dataset.cast_column("annotation", Value("string"))
     train_augment_and_transform = A.Compose(
         [
             # A.HorizontalFlip(p=0.5),
@@ -94,17 +95,22 @@ def rgb_aug_and_trans(example, transform, image_processor):
     # size = (256, 256)
     # example["image"] = example["image"].resize(size, Image.BILINEAR)
     # example["annotation"] = example["annotation"].resize(size, Image.NEAREST)
-    semantic_and_instance_masks = np.array(example["annotation"])[..., :2]
+
+    mask = cv2.imread(example["annotation"], cv2.IMREAD_UNCHANGED)
+    semantic_and_instance_masks = mask[..., 1:]
     image = np.array(example["image"])
     output = transform(image=image, mask=semantic_and_instance_masks)
     aug_image = output["image"]
     aug_semantic_and_instance_masks = output["mask"]
-    aug_instance_mask = aug_semantic_and_instance_masks[..., 1]
+    aug_instance_mask = aug_semantic_and_instance_masks[..., 0]
+    aug_semantic_mask = aug_semantic_and_instance_masks[..., 1]
+    # in1 = np.unique(aug_instance_mask)
+    # se1 = np.unique(aug_semantic_mask)
 
     # Create mapping from instance id to semantic id
-    unique_semantic_id_instance_id_pairs = np.unique(aug_semantic_and_instance_masks.reshape(-1, 2), axis=0)
+    unique_instance_id_semantic_id_pairs = np.unique(aug_semantic_and_instance_masks.reshape(-1, 2), axis=0)
     instance_id_to_semantic_id = {
-        instance_id: semantic_id for semantic_id, instance_id in unique_semantic_id_instance_id_pairs
+        instance_id: semantic_id for instance_id, semantic_id in unique_instance_id_semantic_id_pairs
     }
 
     model_inputs = image_processor(
@@ -130,18 +136,21 @@ def rgbd_aug_and_trans(example, transform, image_processor):
     # Resize annotation (use NEAREST to preserve label values)
     # example["annotation"] = example["annotation"].resize(size, Image.NEAREST)
 
+    mask = cv2.imread(example["annotation"], cv2.IMREAD_UNCHANGED)
+    semantic_and_instance_masks = mask[..., 1:]
     image = np.array(example["image"])
     image = image.transpose(1, 2, 0, 3).reshape(image.shape[1], image.shape[2], -1)
-    semantic_and_instance_masks = np.array(example["annotation"])[..., :2]
+    # semantic_and_instance_masks = np.array(example["annotation"])[..., :2]
     output = transform(image=image, mask=semantic_and_instance_masks)
     aug_image = output["image"]
     aug_semantic_and_instance_masks = output["mask"]
-    aug_instance_mask = aug_semantic_and_instance_masks[..., 1]
+    aug_instance_mask = aug_semantic_and_instance_masks[..., 0]
+    aug_semantic_mask = aug_semantic_and_instance_masks[..., 1]
 
     # Create mapping from instance id to semantic id
-    unique_semantic_id_instance_id_pairs = np.unique(aug_semantic_and_instance_masks.reshape(-1, 2), axis=0)
+    unique_instance_id_semantic_id_pairs = np.unique(aug_semantic_and_instance_masks.reshape(-1, 2), axis=0)
     instance_id_to_semantic_id = {
-        instance_id: semantic_id for semantic_id, instance_id in unique_semantic_id_instance_id_pairs
+        instance_id: semantic_id for instance_id, semantic_id in unique_instance_id_semantic_id_pairs
     }
 
     model_inputs = image_processor(
@@ -171,16 +180,18 @@ def rgbd_ultra_aug_and_trans(example, transform, image_processor):
 
     image = np.array(example["image"])
     image = image.transpose(1, 2, 0, 3).reshape(image.shape[1], image.shape[2], -1)
-    semantic_and_instance_masks = np.array(example["annotation"])[..., :2]
+    mask = cv2.imread(example["annotation"], cv2.IMREAD_UNCHANGED)
+    semantic_and_instance_masks = mask[..., 1:]
     output = transform(image=image, mask=semantic_and_instance_masks)
     aug_image = output["image"]
     aug_semantic_and_instance_masks = output["mask"]
-    aug_instance_mask = aug_semantic_and_instance_masks[..., 1]
+    aug_instance_mask = aug_semantic_and_instance_masks[..., 0]
+    aug_semantic_mask = aug_semantic_and_instance_masks[..., 1]
 
     # Create mapping from instance id to semantic id
-    unique_semantic_id_instance_id_pairs = np.unique(aug_semantic_and_instance_masks.reshape(-1, 2), axis=0)
+    unique_instance_id_semantic_id_pairs = np.unique(aug_semantic_and_instance_masks.reshape(-1, 2), axis=0)
     instance_id_to_semantic_id = {
-        instance_id: semantic_id for semantic_id, instance_id in unique_semantic_id_instance_id_pairs
+        instance_id: semantic_id for instance_id, semantic_id in unique_instance_id_semantic_id_pairs
     }
 
     # Insert ICSFer
