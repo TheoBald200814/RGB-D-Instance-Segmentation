@@ -89,11 +89,11 @@ class Arguments:
             )
         }
     )
-    rgb_d: bool = field(
-        default=False,
+    version: str = field(
+        default="0.0.0",
         metadata={
             "help": (
-                "input data contain rgb and depth"
+                "the version of the model"
             )
         }
     )

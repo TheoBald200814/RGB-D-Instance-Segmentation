@@ -40,29 +40,29 @@ def dataloader(args, image_processor):
     validation_transform = A.Compose(
         [A.NoOp()],
     )
-    if args.rgb_d == 'multi':  # RGB-D(6 channel)
-        dataset = dataset.cast_column("image", [IMG()])
-        transform_rgbd = partial(
-            rgbd_aug_and_trans, transform=train_augment_and_transform, image_processor=image_processor
-        )
-        dataset["train"] = dataset["train"].map(transform_rgbd, num_proc=4)
-        dataset["validation"] = dataset["validation"].map(transform_rgbd, num_proc=4)
-
-    elif args.rgb_d == 'ultra': # RGB-D(30 channel)
-        dataset = dataset.cast_column("image", [IMG()])
-        transform_rgbd_ultra = partial(
-            rgbd_ultra_aug_and_trans, transform=train_augment_and_transform, image_processor=image_processor
-        )
-        dataset["train"] = dataset["train"].map(transform_rgbd_ultra, num_proc=4)
-        dataset["validation"] = dataset["validation"].map(transform_rgbd_ultra, num_proc=4)
-
-    else:  # RGB only(3 channel)
-        transform_rgb = partial(
+    if args.version == '0.0.0': # Only 3 channel RGB as input
+        transform_v0 = partial(
             rgb_aug_and_trans, transform=train_augment_and_transform, image_processor=image_processor
         )
         dataset = dataset.cast_column("image", IMG())
-        dataset["train"] = dataset["train"].map(transform_rgb, num_proc=4)
-        dataset["validation"] = dataset["validation"].map(transform_rgb, num_proc=4)
+        dataset["train"] = dataset["train"].map(transform_v0, num_proc=4, writer_batch_size=50)
+        dataset["validation"] = dataset["validation"].map(transform_v0, num_proc=4, writer_batch_size=50)
+
+    elif args.version == '0.1.0' or args.version == '0.1.1': # 6 channel of RGB and Depth as input
+        transform_v1 = partial(
+            rgbd_aug_and_trans, transform=train_augment_and_transform, image_processor=image_processor
+        )
+        dataset = dataset.cast_column("image", [IMG()])
+        dataset["train"] = dataset["train"].map(transform_v1, num_proc=4, writer_batch_size=50)
+        dataset["validation"] = dataset["validation"].map(transform_v1, num_proc=4, writer_batch_size=50)
+
+    elif args.version == '0.2.0': # 30 channel of RGB and expand Depth as input
+        transform_v2 = partial(
+            rgbd_ultra_aug_and_trans, transform=train_augment_and_transform, image_processor=image_processor
+        )
+        dataset = dataset.cast_column("image", [IMG()])
+        dataset["train"] = dataset["train"].map(transform_v2, num_proc=4, writer_batch_size=50)
+        dataset["validation"] = dataset["validation"].map(transform_v2, num_proc=4, writer_batch_size=50)
 
     dataset["train"].set_format(type="torch")
     dataset["validation"].set_format(type="torch")
@@ -195,16 +195,16 @@ def rgbd_ultra_aug_and_trans(example, transform, image_processor):
     }
 
     # Insert ICSFer
-    aug_fused_img_1, aug_fused_img_2, depth_input = rgbd_ultra_preprocess(aug_image)
+    # aug_fused_img_1, aug_fused_img_2, depth_input = rgbd_ultra_preprocess(aug_image)
+    aug_fused_img, depth_input = nyu_ultra_preprocess(aug_image)
     color = image[..., 0:3]
     ahe = image[..., 15:18]
     laplace = image[..., 18:21]
     gaussian = image[..., 21:24]
 
     model_inputs = image_processor(
-        images=[color, aug_fused_img_1, aug_fused_img_2, depth_input, ahe, laplace, gaussian],
-        segmentation_maps=[aug_instance_mask, aug_instance_mask, aug_instance_mask, aug_instance_mask,
-                           aug_instance_mask, aug_instance_mask, aug_instance_mask],
+        images=[color, aug_fused_img, depth_input],
+        segmentation_maps=[aug_instance_mask, aug_instance_mask, aug_instance_mask],
         instance_id_to_semantic_id=instance_id_to_semantic_id,
         return_tensors="pt",
     )
@@ -244,6 +244,24 @@ def rgbd_ultra_preprocess(image):
     depth_input = np.stack([eq, lt, fused_img_gray], axis=2)
 
     return fused_img_1, fused_img_2, depth_input
+
+def nyu_ultra_preprocess(image):
+    # (batch, 30, H, W) [RGB, DEPTH, AUG1, AUG2, AUG3, AUG4, AUG5, AUG6, AUG7, AUG8]
+
+    depth = image[..., 3:6]
+    aug1 = image[..., 6:9]
+    aug2 = image[..., 9:12]
+    aug3 = image[..., 12:15]
+    aug4 = image[..., 15:18]
+    aug5 = image[..., 18:21]
+    aug6 = image[..., 21:24]
+    aug7 = image[..., 24:27]
+    aug8 = image[..., 27:30]
+
+    # ICSFer
+    fused_img = cosine_similarity_fuse_v3([aug1, aug2, aug3, aug4, aug5, aug6, aug7, aug8], check=None)
+
+    return fused_img, depth
 
 
 def collate_fn(examples):

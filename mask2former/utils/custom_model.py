@@ -33,94 +33,116 @@ class CustomConfig(Mask2FormerConfig):
 
 class CustomMask2FormerModel(Mask2FormerModel):
     main_input_name = "pixel_values"
-    def __init__(self, config, rgb_d):
+    def __init__(self, config, version):
         print("[CustomMask2FormerModel] constructing...")
         super().__init__(config)
-        self.pixel_level_module = CustomMask2FormerPixelLevelModule(config, rgb_d=rgb_d)
+        self.pixel_level_module = CustomMask2FormerPixelLevelModule(config, version=version)
 
 
 class CustomMask2FormerForUniversalSegmentation(Mask2FormerForUniversalSegmentation):
     main_input_name = "pixel_values"
     config_class = CustomConfig
 
-    def __init__(self, config, rgb_d='single'):
+    def __init__(self, config, version='0.0.0'):
         print("[CustomMask2FormerForUniversalSegmentation] constructing...")
         super().__init__(config)
         set_seed(42)
-        self.model = CustomMask2FormerModel(config, rgb_d=rgb_d)
+        self.model = CustomMask2FormerModel(config, version=version)
 
 
 class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
     main_input_name = "pixel_values"
-    def __init__(self, config, rgb_d):
+    def __init__(self, config, version):
         print("[CustomMask2FormerPixelLevelModule] constructing...")
         super().__init__(config)
-        self.rgb_d = rgb_d
-        print(f"[CustomMask2FormerPixelLevelModule] rgb_d={self.rgb_d}")
-        if self.rgb_d == 'single': # RGB (3 channel)
+        self.version = version
+        print(f"[CustomMask2FormerPixelLevelModule] Version={self.version}")
+        if self.version == '0.0.0': # 3 channel (RGB)
             pass # use super().encoder
 
-        elif self.rgb_d == 'multi': # RGB-D (6 channel)
+        elif self.version == '0.1.0': # 6 channel (RGB, Depth)
             # self.depth_encoder = AutoBackbone.from_pretrained("microsoft/resnet-50")
             self.depth_encoder = load_backbone(config)
             self.feature_fuser = FeatureFuser()
 
-        else: # RGB-D (30 channel)
+        elif self.version == '0.1.1': # 6 channel (RGB, Depth)
             self.depth_encoder = load_backbone(config)
             self.feature_fuser = FeatureFuser()
-            # self.dsam1 = DSAModule(in_channels=96, out_channels=96, num_depth_regions=3)
-            # self.dsam2 = DSAModule(in_channels=96, out_channels=96, num_depth_regions=3)
-            self.dsam3 = DSAModule(in_channels=96, out_channels=192, num_depth_regions=3)
-            self.dsam4 = DSAModule(in_channels=192, out_channels=384, num_depth_regions=3)
-            self.dsam5 = DSAModule(in_channels=384, out_channels=768, num_depth_regions=3)
+            self.dsam0 = DSAModule(in_channels=96, out_channels=192, num_depth_regions=3)
+            self.dsam1 = DSAModule(in_channels=192, out_channels=384, num_depth_regions=3)
+            self.dsam2 = DSAModule(in_channels=384, out_channels=768, num_depth_regions=3)
+
+        else: # 9 channel (RGB, Depth, Fused_depth)
+            self.depth_encoder = load_backbone(config)
+            self.feature_fuser = FeatureFuser()
+            self.dsam0 = DSAModule(in_channels=96, out_channels=192, num_depth_regions=3)
+            self.dsam1 = DSAModule(in_channels=192, out_channels=384, num_depth_regions=3)
+            self.dsam2 = DSAModule(in_channels=384, out_channels=768, num_depth_regions=3)
 
     def forward(self, pixel_values: Tensor, output_hidden_states: bool = False) -> Mask2FormerPixelLevelModuleOutput:
-        if self.rgb_d == 'single': # RGB (3 channel)
+        if self.version == '0.0.0': # 3 channel
             backbone_features = self.encoder(pixel_values).feature_maps
 
-        elif self.rgb_d == 'multi': # RGB-D (6 channel)
+        elif self.version == '0.1.0': # 6 channel
             rgb = pixel_values[:, 0:3, :, :]
             depth = pixel_values[:, 3:6, :, :]
             color_feature_map = self.encoder(rgb).feature_maps
             depth_feature_map = self.depth_encoder(depth).feature_maps
             backbone_features = self.feature_fuser(color_feature_map, depth_feature_map)
 
-        else: # RGB-D (18 channel)
-            # (batch, 21, H, W) [color_input, fused_img_1, fused_img_2, depth_input, ahe, laplace, gaussian]
-            color_input = pixel_values[:, 0:3, :, :]
-            fused_img_batch1 = pixel_values[:, 3:6, :, :]
-            fused_img_batch2 = pixel_values[:, 6:9, :, :]
-            depth_input = pixel_values[:, 9:12, :, :]
-            # ahe = pixel_values[:, 12:15, :, :]
-            # laplace = pixel_values[:, 15:18, :, :]
-            # gaussian = pixel_values[:, 18:21, :, :]
-
-            # rgb backbone
-            rgb_backbone_features = self.encoder(color_input).feature_maps # torch.Tensor
-            cp_rgb_backbone_features = list(rgb_backbone_features)
+        elif self.version == '0.1.1': # 6 channel
+            rgb = pixel_values[:, 0:3, :, :]
+            depth = pixel_values[:, 3:6, :, :]
+            color_feature_map = self.encoder(rgb).feature_maps
+            depth_feature_map = self.depth_encoder(depth).feature_maps
 
             # DSAM
-            # dsam_output1 = [self.dsam1(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(cp_rgb_backbone_features[0], ahe)] # [B, 96, 64, 64]
-            # dsam_output1 = torch.stack(dsam_output1, dim=0).squeeze(1)  # [B, 96, 64, 64]
-            # dsam_output2 = [self.dsam2(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(dsam_output1, laplace)] # [B, 96, 64, 64]
-            # dsam_output2 = torch.stack(dsam_output2, dim=0).squeeze(1)  # [B, 96, 64, 64]
-            dsam_output3 = [self.dsam3(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(cp_rgb_backbone_features[0], fused_img_batch1)] # [B, 96, 64, 64]
-            dsam_output3 = torch.stack(dsam_output3, dim=0).squeeze(1)  # [B, 192, 32, 32]
-            cp_rgb_backbone_features[1] += dsam_output3
+            cp_color_feature_map = list(color_feature_map)
+            cp_depth_feature_map = list(depth_feature_map)
 
-            dsam_output4 = [self.dsam4(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(cp_rgb_backbone_features[1], fused_img_batch1)] # [B, 192, 32, 32]
-            dsam_output4 = torch.stack(dsam_output4, dim=0).squeeze(1)  # [B, 384, 16, 16]
-            cp_rgb_backbone_features[2] += dsam_output4
+            dsam_output0 = [self.dsam0(i.unsqueeze(0), self.to_grayscale(j)) for i, j in
+                            zip(cp_color_feature_map[0], depth)]  # [B, 96, 64, 64]
+            dsam_output0 = torch.stack(dsam_output0, dim=0).squeeze(1)  # [B, 192, 32, 32]
+            cp_color_feature_map[1] += dsam_output0
 
-            dsam_output5 = [self.dsam5(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(rgb_backbone_features[2], fused_img_batch2)] # [B, 384, 16, 16]
-            dsam_output5 = torch.stack(dsam_output5, dim=0).squeeze(1)  # [B, 768, 16, 16]
-            cp_rgb_backbone_features[3] += dsam_output5
+            dsam_output1 = [self.dsam1(i.unsqueeze(0), self.to_grayscale(j)) for i, j in
+                            zip(cp_color_feature_map[1], depth)]  # [B, 192, 32, 32]
+            dsam_output1 = torch.stack(dsam_output1, dim=0).squeeze(1)  # [B, 384, 16, 16]
+            cp_color_feature_map[2] += dsam_output1
 
-            depth_backbone_features = self.depth_encoder(depth_input).feature_maps
-            cp_depth_backbone_features = list(depth_backbone_features)
+            dsam_output2 = [self.dsam2(i.unsqueeze(0), self.to_grayscale(j)) for i, j in
+                            zip(cp_color_feature_map[2], depth)]  # [B, 384, 16, 16]
+            dsam_output2 = torch.stack(dsam_output2, dim=0).squeeze(1)  # [B, 768, 16, 16]
+            cp_color_feature_map[3] += dsam_output2
 
             # combine the features of rgb and depth
-            backbone_features = self.feature_fuser(cp_rgb_backbone_features, cp_depth_backbone_features)
+            backbone_features = self.feature_fuser(cp_color_feature_map, cp_depth_feature_map)
+
+        else: # 9 channel
+            rgb = pixel_values[:, 0:3, :, :]
+            depth = pixel_values[:, 3:6, :, :]
+            fused_depth = pixel_values[:, 6:9, :, :]
+            color_feature_map = self.encoder(rgb).feature_maps
+            depth_feature_map = self.depth_encoder(depth).feature_maps
+
+            # DSAM
+            cp_color_feature_map = list(color_feature_map)
+            cp_depth_feature_map = list(depth_feature_map)
+
+            dsam_output0 = [self.dsam0(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(cp_color_feature_map[0], fused_depth)] # [B, 96, 64, 64]
+            dsam_output0 = torch.stack(dsam_output0, dim=0).squeeze(1)  # [B, 192, 32, 32]
+            cp_color_feature_map[1] += dsam_output0
+
+            dsam_output1 = [self.dsam1(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(cp_color_feature_map[1], fused_depth)] # [B, 192, 32, 32]
+            dsam_output1 = torch.stack(dsam_output1, dim=0).squeeze(1)  # [B, 384, 16, 16]
+            cp_color_feature_map[2] += dsam_output1
+
+            dsam_output2 = [self.dsam2(i.unsqueeze(0), self.to_grayscale(j)) for i, j in zip(cp_color_feature_map[2], fused_depth)] # [B, 384, 16, 16]
+            dsam_output2 = torch.stack(dsam_output2, dim=0).squeeze(1)  # [B, 768, 16, 16]
+            cp_color_feature_map[3] += dsam_output2
+
+            # combine the features of rgb and depth
+            backbone_features = self.feature_fuser(cp_color_feature_map, cp_depth_feature_map)
 
         decoder_output = self.decoder(backbone_features, output_hidden_states=output_hidden_states)
 
