@@ -1129,6 +1129,121 @@ def to_grayscale(image_data):
         raise TypeError("Input image_data must be a NumPy ndarray or a PyTorch Tensor.")
 
 
+def compute_depth_gradient(depth_map: np.ndarray) -> np.ndarray:
+    """
+    Computes the gradient magnitude map from a single-channel depth map.
+
+    Args:
+        depth_map (np.ndarray): Input depth map as a NumPy array.
+                                Expected to be single-channel (H, W).
+                                Can be integer (e.g., uint16) or float.
+
+    Returns:
+        np.ndarray: The gradient magnitude map (H, W), float type.
+                    Returns an empty array if input is invalid.
+    """
+    if depth_map is None or depth_map.ndim != 2:
+        print("Error: Input depth_map must be a single-channel NumPy array.")
+        return np.array([])
+
+    # Convert depth map to float32 for gradient calculation
+    # Sobel works on various types, but float is generally safer for derivatives
+    depth_map_float = depth_map.astype(np.float32)
+
+    # Calculate gradients in x and y directions using Sobel operator
+    # Output depth CV_64F to avoid clipping negative gradients or large values
+    grad_x = cv2.Sobel(depth_map_float, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(depth_map_float, cv2.CV_64F, 0, 1, ksize=3)
+
+    # Calculate the gradient magnitude
+    gradient_magnitude = np.sqrt(grad_x**2 + grad_y**2)
+
+    # --- Visualization ---
+    # Normalize the magnitude for display (scale to 0-255)
+    # cv2.NORM_MINMAX scales the array to the specified range [0, 255]
+    gradient_magnitude_display = cv2.normalize(gradient_magnitude, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+
+    # Display the gradient magnitude map
+    cv2.imshow("Depth Gradient Magnitude", gradient_magnitude_display)
+
+    return gradient_magnitude # Return the float magnitude map
+
+
+def compute_surface_normals(depth_map: np.ndarray, invalid_depth_value: float = 0.0) -> np.ndarray:
+    """
+    Computes the surface normal map from a single-channel depth map.
+    Assumes a camera coordinate system where +Z is depth, +X is right, +Y is down.
+    Normals are computed based on gradients (-Gx, -Gy, 1) and then normalized.
+
+    Args:
+        depth_map (np.ndarray): Input depth map as a NumPy array (H, W).
+                                Can be integer (e.g., uint16) or float.
+        invalid_depth_value (float): The value used to represent invalid depth pixels.
+                                     These pixels will have zero normals in the output.
+                                     Defaults to 0.0.
+
+    Returns:
+        np.ndarray: The surface normal map (H, W, 3), float type, with values in [-1, 1].
+                    Returns an empty array if input is invalid.
+    """
+    if depth_map is None or depth_map.ndim != 2:
+        print("Error: Input depth_map must be a single-channel NumPy array.")
+        return np.array([])
+
+    # Mask out invalid depth values
+    valid_mask = (depth_map != invalid_depth_value)
+
+    # Convert depth map to float32 for gradient calculation
+    depth_map_float = depth_map.astype(np.float32)
+
+    # Calculate gradients (∂Z/∂u, ∂Z/∂v) using Sobel operator
+    # Output depth CV_64F
+    grad_x = cv2.Sobel(depth_map_float, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(depth_map_float, cv2.CV_64F, 0, 1, ksize=3)
+
+    # Calculate normal vectors proportional to (-Gx, -Gy, 1)
+    # The Z component is 1 in this simplified model (assuming unit aspect ratio and focal length)
+    z_component = np.ones_like(grad_x) # Shape (H, W), dtype CV_64F
+
+    # Stack components to get normal vectors (H, W, 3)
+    # The order here is [-Gx, -Gy, 1]
+    normals = np.stack([-grad_x, -grad_y, z_component], axis=-1) # Shape (H, W, 3), dtype CV_64F
+
+    # Calculate magnitude for normalization
+    magnitude = np.linalg.norm(normals, axis=-1, keepdims=True) # Shape (H, W, 1)
+
+    # Avoid division by zero where magnitude is zero (e.g., perfectly flat areas)
+    # Add a small epsilon or handle explicitly
+    magnitude[magnitude == 0] = 1e-6 # Prevent division by zero
+
+    # Normalize the normal vectors to unit length
+    unit_normals = normals / magnitude
+
+    # Apply the valid mask: set normals to [0, 0, 0] for invalid pixels
+    unit_normals[~valid_mask] = 0 # Set invalid normals to zero vector
+
+    # --- Visualization ---
+    # Map unit normals (-1 to 1) to RGB (0 to 255) for display
+    # Formula: (N + 1) / 2 * 255
+    # Ensure values are in [0, 1] range before scaling to [0, 255]
+    # Clip values just in case numerical issues cause slight deviations
+    unit_normals_display = ((unit_normals + 1) / 2.0 * 255.0).clip(0, 255).astype(np.uint8)
+
+    # OpenCV expects BGR order for color images.
+    # A common visualization mapping is:
+    # X component -> Red channel
+    # Y component -> Green channel
+    # Z component -> Blue channel
+    # Our unit_normals are in order [Nx, Ny, Nz] (where Nx=-Gx, Ny=-Gy, Nz=1)
+    # For OpenCV BGR, we need [Nz, Ny, Nx]
+    unit_normals_display_bgr = unit_normals_display[:, :, [2, 1, 0]] # Rearrange channels
+
+    # Display the surface normal map
+    cv2.imshow("Surface Normals", unit_normals_display_bgr)
+
+    return unit_normals_display_bgr # Return the float unit normal map
+
+
 def main():
     image_dir = "dataset/local/coco82/color"
     output_dir = "dataset/local/coco82"
