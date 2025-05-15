@@ -68,7 +68,7 @@ class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
             color_map_channels = [96, 192, 384, 768]
             self.depth_gradient_injection = DepthGradientInjectionWithMask(color_map_channels, 3)
 
-        elif self.version == '0.0.3' or self.version == '0.0.4' or self.version == '0.0.5':  # 7 channel (RGB, Gradient-Depth, Gradient-Mask)
+        elif self.version == '0.0.3' or self.version == '0.0.4' or self.version == '0.0.5' or self.version == '0.0.6':  # 7 channel (RGB, Gradient-Depth, Gradient-Mask)
             color_map_channels = [96, 192, 384, 768]
             self.depth_gradient_injection = DepthGradientInjectionResidual(color_map_channels, 3)
 
@@ -119,7 +119,7 @@ class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
             cp_color_feature_map = list(color_feature_map)
             backbone_features = self.depth_gradient_injection(cp_color_feature_map, depth)
 
-        elif self.version == '0.0.2' or self.version == '0.0.3' or self.version == '0.0.4' or self.version == '0.0.5': # 7 channel (RGB, Gradient-Depth, Gradient-Mask)
+        elif self.version == '0.0.2' or self.version == '0.0.3' or self.version == '0.0.4' or self.version == '0.0.5' or self.version == '0.0.6': # 7 channel (RGB, Gradient-Depth, Gradient-Mask)
             rgb = pixel_values[:, 0:3, :, :]
             depth = pixel_values[:, 3:6, :, :]
             gradient_mask = pixel_values[:, 6:7, :, :]

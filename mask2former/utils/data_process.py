@@ -1255,7 +1255,7 @@ def calculate_gradient_features(depth_np: np.ndarray, invalid_depth_value: float
 
     Returns:
         tuple: (gradient_magnitude_np, grad_x_np, grad_y_np, valid_gradient_mask_np)
-               All are float32 NumPy arrays (H, W, 1).
+               All are float32 NumPy arrays (H, W).
                valid_gradient_mask_np is 1.0 for valid gradients, 0.0 otherwise.
     """
     # Ensure depth is float32
@@ -1303,6 +1303,115 @@ def calculate_gradient_features(depth_np: np.ndarray, invalid_depth_value: float
 
 
     return normalized_magnitude, grad_x, grad_y, valid_gradient_mask
+
+
+def calculate_surface_normals(depth_np: np.ndarray, camera_intrinsics: dict = None, invalid_depth_value: float = 0.0):
+    """
+    Calculates surface normals from a depth map.
+    Uses camera intrinsics if provided for accurate normals.
+    If intrinsics are NOT provided, uses a gradient-based approximation.
+    Handles invalid depth values.
+
+    Args:
+        depth_np (np.ndarray): Input depth map as a float32 NumPy array (H, W).
+        camera_intrinsics (dict | None): Dictionary with keys 'fx', 'fy', 'cx', 'cy'.
+                                         If None, a gradient-based approximation is used.
+        invalid_depth_value (float): The value representing invalid depth pixels.
+
+    Returns:
+        tuple: (surface_normals_np, valid_normal_mask_np)
+               surface_normals_np is float32 NumPy array (H, W, 3) with values in [-1, 1].
+               valid_normal_mask_np is 1.0 for valid normals, 0.0 otherwise.
+    """
+    # Ensure depth is float32
+    depth_np = depth_np.astype(np.float32)
+    H, W = depth_np.shape
+
+    # Create a mask for valid depth values
+    valid_depth_mask = (depth_np != invalid_depth_value) & (~np.isnan(depth_np))
+
+    if camera_intrinsics is not None:
+        # --- Method 1: Standard 3D Point Cross Product (Requires Intrinsics) ---
+        fx, fy, cx, cy = camera_intrinsics['fx'], camera_intrinsics['fy'], camera_intrinsics['cx'], camera_intrinsics['cy']
+
+        # Convert depth to 3D points in camera coordinates
+        v, u = np.indices((H, W))
+        Z = depth_np.copy()
+        Z[~valid_depth_mask] = np.nan # Use NaN for invalid points for safer calculations
+
+        X = (u - cx) * Z / fx
+        Y = (v - cy) * Z / fy
+
+        points_3d = np.stack([X, Y, Z], axis=-1) # Shape (H, W, 3)
+
+        # Calculate gradients of 3D points
+        dP_du = np.gradient(points_3d, axis=1) # Gradient along width (u)
+        dP_dv = np.gradient(points_3d, axis=0) # Gradient along height (v)
+
+        # Calculate cross product (normal vector)
+        normals = np.cross(dP_du.reshape(-1, 3), dP_dv.reshape(-1, 3)).reshape(H, W, 3)
+
+        # Normalize normals
+        norm = np.linalg.norm(normals, axis=-1, keepdims=True)
+        # Avoid division by zero for invalid normals (where norm is 0 or NaN)
+        norm[norm == 0] = 1e-6
+        norm[np.isnan(norm)] = 1e-6
+
+        unit_normals = normals / norm
+
+        # Handle invalid points: set normals to (0,0,0) where original depth was invalid
+        # Also set to (0,0,0) where the calculated normal is NaN (e.g., from NaN gradients)
+        invalid_normal_mask = ~valid_depth_mask | np.isnan(unit_normals).any(axis=-1)
+        unit_normals[invalid_normal_mask] = 0
+
+        # Generate a mask for valid normals (where normal vector is not (0,0,0))
+        valid_normal_mask = (np.linalg.norm(unit_normals, axis=-1) > 1e-5).astype(np.float32)
+
+    else:
+        # --- Method 2: Gradient-Based Approximation (No Intrinsics) ---
+        print("Camera intrinsics not provided. Using gradient-based normal approximation.")
+
+        # Calculate gradients using Sobel operator
+        # Use CV_32F for float output
+        grad_x = cv2.Sobel(depth_np, cv2.CV_32F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(depth_np, cv2.CV_32F, 0, 1, ksize=3)
+
+        # Mask out gradients where original depth was invalid
+        grad_x[~valid_depth_mask] = 0
+        grad_y[~valid_depth_mask] = 0
+
+        # Construct approximate normal vector (-Gx, -Gy, 1)
+        # The Z component is fixed at 1
+        z_component = np.ones_like(grad_x) # Shape (H, W), dtype float32
+
+        # Stack components to get approximate normal vectors (H, W, 3)
+        # Order: [-Gx, -Gy, 1]
+        approx_normals = np.stack([-grad_x, -grad_y, z_component], axis=-1) # Shape (H, W, 3), dtype float32
+
+        # Calculate magnitude for normalization
+        magnitude = np.linalg.norm(approx_normals, axis=-1, keepdims=True) # Shape (H, W, 1)
+
+        # Avoid division by zero where magnitude is zero (e.g., perfectly flat areas)
+        # Add a small epsilon or handle explicitly
+        magnitude[magnitude == 0] = 1e-6 # Prevent division by zero
+
+        # Normalize the approximate normal vectors to unit length
+        unit_normals = approx_normals / magnitude
+
+        # Apply the valid depth mask: set normals to [0, 0, 0] for invalid pixels
+        # Also handle potential NaNs from division if magnitude was NaN
+        invalid_normal_mask = ~valid_depth_mask | np.isnan(unit_normals).any(axis=-1)
+        unit_normals[invalid_normal_mask] = 0 # Set invalid normals to zero vector
+
+        # Generate a mask for valid normals (where normal vector is not (0,0,0))
+        # This mask indicates points where a normal could be successfully calculated
+        valid_normal_mask = (np.linalg.norm(unit_normals, axis=-1) > 1e-5).astype(np.float32) # Use a small threshold
+
+
+    # Add channel dimension to mask
+    # valid_normal_mask = np.expand_dims(valid_normal_mask, axis=-1) # (H, W, 1)
+
+    return unit_normals, valid_normal_mask
 
 
 def main():
