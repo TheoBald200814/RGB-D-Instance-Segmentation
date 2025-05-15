@@ -1163,8 +1163,8 @@ def compute_depth_gradient(depth_map: np.ndarray) -> np.ndarray:
     # cv2.NORM_MINMAX scales the array to the specified range [0, 255]
     gradient_magnitude_display = cv2.normalize(gradient_magnitude, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
 
-    # Display the gradient magnitude map
-    cv2.imshow("Depth Gradient Magnitude", gradient_magnitude_display)
+    # # Display the gradient magnitude map
+    # cv2.imshow("Depth Gradient Magnitude", gradient_magnitude_display)
 
     return gradient_magnitude # Return the float magnitude map
 
@@ -1239,9 +1239,70 @@ def compute_surface_normals(depth_map: np.ndarray, invalid_depth_value: float = 
     unit_normals_display_bgr = unit_normals_display[:, :, [2, 1, 0]] # Rearrange channels
 
     # Display the surface normal map
-    cv2.imshow("Surface Normals", unit_normals_display_bgr)
+    # cv2.imshow("Surface Normals", unit_normals_display_bgr)
 
     return unit_normals_display_bgr # Return the float unit normal map
+
+
+def calculate_gradient_features(depth_np: np.ndarray, invalid_depth_value: float = 0.0):
+    """
+    Calculates depth gradient magnitude and Gx/Gy from a depth map.
+    Handles invalid depth values by masking or setting gradients to 0.
+
+    Args:
+        depth_np (np.ndarray): Input depth map as a float32 NumPy array (H, W).
+        invalid_depth_value (float): The value representing invalid depth in depth_np.
+
+    Returns:
+        tuple: (gradient_magnitude_np, grad_x_np, grad_y_np, valid_gradient_mask_np)
+               All are float32 NumPy arrays (H, W, 1).
+               valid_gradient_mask_np is 1.0 for valid gradients, 0.0 otherwise.
+    """
+    # Ensure depth is float32
+    depth_np = depth_np.astype(np.float32)
+
+    # Create a mask for valid depth values
+    valid_depth_mask = (depth_np != invalid_depth_value) & (~np.isnan(depth_np))
+
+    # Calculate gradients using Sobel operator
+    # Use CV_32F for float output
+    grad_x = cv2.Sobel(depth_np, cv2.CV_32F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(depth_np, cv2.CV_32F, 0, 1, ksize=3)
+
+    # Calculate magnitude
+    magnitude = np.sqrt(grad_x**2 + grad_y**2)
+
+    # Mask out gradients where original depth was invalid
+    # Set to 0 where depth was invalid
+    grad_x[~valid_depth_mask] = 0
+    grad_y[~valid_depth_mask] = 0
+    magnitude[~valid_depth_mask] = 0
+
+    # Generate a mask for valid *gradients* (e.g., where magnitude > 0)
+    # This mask indicates potential boundary regions
+    valid_gradient_mask = (magnitude > 0).astype(np.float32)
+
+    # Optional: Normalize magnitude (e.g., to [0, 1] based on non-zero values)
+    # This normalization is different from standard image normalization
+    valid_magnitudes = magnitude[valid_gradient_mask > 0]
+    if valid_magnitudes.size > 0:
+        min_val = np.min(valid_magnitudes)
+        max_val = np.max(magnitude) # Use max of all values, including 0
+        if max_val > min_val:
+             normalized_magnitude = (magnitude - min_val) / (max_val - min_val)
+        else: # Handle case where all valid gradients are the same or only 0
+             normalized_magnitude = np.zeros_like(magnitude, dtype=np.float32)
+    else: # Handle case with no valid gradients
+        normalized_magnitude = np.zeros_like(magnitude, dtype=np.float32)
+
+    # Add channel dimension
+    # normalized_magnitude = np.expand_dims(normalized_magnitude, axis=-1) # (H, W, 1)
+    # grad_x = np.expand_dims(grad_x, axis=-1) # (H, W, 1)
+    # grad_y = np.expand_dims(grad_y, axis=-1) # (H, W, 1)
+    # valid_gradient_mask = np.expand_dims(valid_gradient_mask, axis=-1) # (H, W, 1)
+
+
+    return normalized_magnitude, grad_x, grad_y, valid_gradient_mask
 
 
 def main():
