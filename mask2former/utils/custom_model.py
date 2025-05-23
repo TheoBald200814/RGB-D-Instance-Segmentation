@@ -1,4 +1,6 @@
 import random
+from typing import List, Dict, Union
+
 import numpy as np
 import torch
 import cv2
@@ -9,6 +11,7 @@ from transformers import Mask2FormerConfig, Mask2FormerModel, Mask2FormerForUniv
 from transformers.models.mask2former.modeling_mask2former import Mask2FormerPixelLevelModule, \
     Mask2FormerForUniversalSegmentationOutput, Mask2FormerPixelLevelModuleOutput
 from transformers.utils.backbone_utils import load_backbone
+from mask2former.utils.data_process import calculate_surface_normals
 
 
 # 固定随机种子
@@ -72,6 +75,11 @@ class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
             color_map_channels = [96, 192, 384, 768]
             self.depth_gradient_injection = DepthGradientInjectionResidual(color_map_channels, 3)
 
+        elif self.version == '0.0.7': # 4 channel (RGB, Gray-Depth)
+            color_map_channels = [96, 192, 384, 768]
+            self.depth_gradient_injection = DepthGradientInjectionResidual(color_map_channels, 3)
+            self.intrinsics_predictor = IntrinsicsPredictorFromDepthImage()
+
         elif self.version == '0.1.0': # 6 channel (RGB, Depth)
             # self.depth_encoder = AutoBackbone.from_pretrained("microsoft/resnet-50")
             self.depth_encoder = load_backbone(config)
@@ -127,6 +135,40 @@ class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
             color_feature_map = self.encoder(rgb).feature_maps
             cp_color_feature_map = list(color_feature_map)
             backbone_features = self.depth_gradient_injection(cp_color_feature_map, depth, gradient_mask)
+
+        elif self.version == '0.0.7':  # 4 channel (RGB, Gray-Depth)
+            rgb = pixel_values[:, 0:3, :, :]
+            gray_depth = pixel_values[:, 3:4, :, :]
+            gray_depth_np = gray_depth.cpu().numpy().squeeze(1)
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+            color_feature_map = self.encoder(rgb).feature_maps
+            cp_color_feature_map = list(color_feature_map)
+            depth_h = gray_depth.shape[2]
+            depth_w = gray_depth.shape[3]
+            predicted_intrinsics = self.intrinsics_predictor(gray_depth, (depth_h, depth_w))
+            surface_normals_results = [calculate_surface_normals(i, j) for i, j in zip(gray_depth_np, predicted_intrinsics)]
+            surface_normals_np_batch, valid_normal_mask_np_batch = [list(x) for x in zip(*surface_normals_results)]
+
+            # 1. 将每个 NumPy 数组转换为 Tensor 并调整维度
+            surface_normals_tensor_list = [
+                torch.from_numpy(normals_np).permute(2, 0, 1)  # Permute dimensions from (0, 1, 2) to (2, 0, 1)
+                for normals_np in surface_normals_np_batch
+            ] # 从 (H, W, D_channels) 转换为 (D_channels, H, W)
+            valid_normal_mask_tensor_list = [
+                torch.from_numpy(mask_np).unsqueeze(0)  # Add a channel dimension at the beginning
+                for mask_np in valid_normal_mask_np_batch
+            ] # 从 (H, W) 转换为 (1, H, W) (添加通道维度)
+
+            # 2. 堆叠成批处理 Tensor
+            surface_normals_tensor = torch.stack(surface_normals_tensor_list, dim=0) # (B, D_channels, H, W)
+            valid_normal_mask_tensor = torch.stack(valid_normal_mask_tensor_list, dim=0) # (B, 1, H, W)
+
+            # 3. 确保数据类型和设备
+            surface_normals_tensor = surface_normals_tensor.float().to(device)
+            valid_normal_mask_tensor = valid_normal_mask_tensor.float().to(device)
+
+            backbone_features = self.depth_gradient_injection(cp_color_feature_map, surface_normals_tensor, valid_normal_mask_tensor)
 
         elif self.version == '0.1.0': # 6 channel
             rgb = pixel_values[:, 0:3, :, :]
@@ -762,6 +804,115 @@ class RatioPredictor(nn.Module):
         predicted_ratio = self.output_min + (self.output_max - self.output_min) * self.sigmoid(raw_ratio) # Shape (B, 1)
 
         return predicted_ratio
+
+
+class IntrinsicsPredictorFromDepthImage(nn.Module):
+    """
+    Predicts camera intrinsic parameters (fx, fy, cx, cy) based on the input depth image.
+    Contains a small convolutional backbone to extract features from the depth image.
+    """
+    def __init__(self, in_channels: int = 1):
+        """
+        Args:
+            in_channels (int): Number of input channels for the depth image (should be 1).
+        """
+        super().__init__()
+        self.in_channels = in_channels
+
+        # Define a small convolutional backbone to process the depth image
+        # This is a simplified example, you might need a more complex one
+        # depending on the complexity of the task and data.
+        self.conv_backbone = nn.Sequential(
+            nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1), # Reduce spatial size, increase channels
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1), # Reduce spatial size again
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1), # Reduce spatial size again
+            nn.ReLU(inplace=True),
+            # Add more layers if needed...
+        )
+
+        # After the conv backbone, we'll use Global Average Pooling
+        self.global_avg_pool = nn.AdaptiveAvgPool2d(1)
+
+        # Determine the number of features after the conv backbone and pooling
+        # We need to run a dummy forward pass or calculate based on architecture
+        # Let's assume the last conv layer outputs 128 channels as per the example above
+        # If you change the conv_backbone, update this value.
+        pooled_feature_size = 128 # Number of output channels from the last conv layer
+
+        # Define the fully connected layers for prediction
+        self.fc_layers = nn.Sequential(
+            nn.Linear(pooled_feature_size, 64),
+            nn.ReLU(inplace=True),
+            nn.Linear(64, 32),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, 4) # Output 4 raw values for fx, fy, cx, cy
+        )
+
+    def forward(self, depth_image: torch.Tensor, target_size: tuple[int, int]) -> list[
+        dict[str, Union[int, int, float, float, bool, bool]]]:
+        """
+        Args:
+            depth_image (torch.Tensor): Input depth image tensor (B, 1, H, W).
+            target_size (tuple[int, int]): The target (height, width) the input images
+                                           were resized to before being fed to the model.
+                                           This is crucial for scaling cx and cy predictions
+                                           relative to the image dimensions.
+
+        Returns:
+            List[dict[str, Union[int, int, float, float, bool, bool]]]: Predicted camera intrinsics {'fx', 'fy', 'cx', 'cy'}
+        """
+        # Ensure input is single channel
+        assert depth_image.shape[1] == self.in_channels, \
+            f"Expected {self.in_channels} input channel(s), but got {depth_image.shape[1]}"
+
+        # Process the depth image through the convolutional backbone
+        features = self.conv_backbone(depth_image) # Shape (B, C_last, H', W')
+
+        # Apply Global Average Pooling
+        pooled = self.global_avg_pool(features) # Shape (B, C_last, 1, 1)
+
+        # Squeeze spatial dimensions to get (B, C_last)
+        pooled = pooled.squeeze(-1).squeeze(-1) # Shape (B, C_last)
+
+        # Pass the pooled features through the fully connected layers
+        raw_intrinsics = self.fc_layers(pooled) # Shape (B, 4)
+
+        # Split the raw output into the four intrinsic components
+        raw_fx, raw_fy, raw_cx, raw_cy = raw_intrinsics.split(1, dim=1)
+
+        # Apply activations and scale predictions based on target image size
+        target_h, target_w = target_size
+        target_w_tensor = torch.tensor(target_w, dtype=raw_cx.dtype, device=raw_cx.device)
+        target_h_tensor = torch.tensor(target_h, dtype=raw_cy.dtype, device=raw_cy.device)
+
+        # fx and fy must be positive. Use torch.exp.
+        predicted_fx = torch.exp(raw_fx)
+        predicted_fy = torch.exp(raw_fy)
+
+        # cx and cy are pixel coordinates. Use sigmoid and scale by image dimensions.
+        predicted_cx = torch.sigmoid(raw_cx) * target_w_tensor
+        predicted_cy = torch.sigmoid(raw_cy) * target_h_tensor
+
+        # Return the predicted intrinsics as a dictionary
+        predicted_intrinsics = {
+            'fx': predicted_fx, # Shape (B, 1)
+            'fy': predicted_fy, # Shape (B, 1)
+            'cx': predicted_cx, # Shape (B, 1)
+            'cy': predicted_cy  # Shape (B, 1)
+        }
+
+        # 获取 batch size
+        batch_size = predicted_intrinsics['fx'].shape[0]
+
+        # 使用列表推导式进行转换
+        intrinsics_list = [
+            {key: tensor[i].item() for key, tensor in predicted_intrinsics.items()}
+            for i in range(batch_size)
+        ]
+
+        return intrinsics_list
 
 
 class DepthGradientInjection(nn.Module):

@@ -253,7 +253,7 @@ def map_7channel_tmp(example, transform, image_processor):
 
     return example
 
-# Input: RGB(3 channel) + Surface-Normal-Depth(3 channel) = 6 channel
+# Input: RGB(3 channel) + Depth(3 channel) = 6 channel
 # Output: RGB(3 channel) + Surface-Normal-Depth(3 channel) + Surface-Normal-Depth-Mask(1 channel) = 7 channel
 def map_7channel_s(example, transform, image_processor):
     assert len(example["image"]) >= 2, "the dataset not include multi-modal image"
@@ -291,6 +291,45 @@ def map_7channel_s(example, transform, image_processor):
     example["pixel_values"] = image.reshape(-1, image.shape[2], image.shape[3]).tolist()
     example["pixel_values"] += surface_normals_np
     example["pixel_values"].append(valid_normal_mask_np.tolist())
+    example["mask_labels"] = model_inputs.mask_labels[0].tolist()
+    example["class_labels"] = model_inputs.class_labels[0]
+
+    return example
+
+# Input: RGB(3 channel) + Depth(3 channel) = 6 channel
+# Output: RGB(3 channel) + Gray-Depth(1 channel)= 4 channel
+def map_7channel_s2(example, transform, image_processor):
+    assert len(example["image"]) >= 2, "the dataset not include multi-modal image"
+    color = np.array(example["image"][0])  # (H, W, 3)
+    depth = np.array(example["image"][1].convert('L'))  # (H, W)
+    mask = cv2.imread(example["annotation"], cv2.IMREAD_UNCHANGED)  # (H, W, 3)
+
+    semantic_and_instance_masks = mask[..., 1:]
+    output = transform(image=color, mask=semantic_and_instance_masks)
+    aug_color = output["image"]
+    aug_semantic_and_instance_masks = output["mask"]
+    aug_instance_mask = aug_semantic_and_instance_masks[..., 0]
+
+    # Create mapping from instance id to semantic id
+    unique_instance_id_semantic_id_pairs = np.unique(aug_semantic_and_instance_masks.reshape(-1, 2), axis=0)
+    instance_id_to_semantic_id = {
+        instance_id: semantic_id for instance_id, semantic_id in unique_instance_id_semantic_id_pairs
+    }
+
+    model_inputs = image_processor(
+        images=[aug_color],
+        segmentation_maps=[aug_instance_mask],
+        instance_id_to_semantic_id=instance_id_to_semantic_id,
+        return_tensors="pt",
+    )
+
+    h = model_inputs.pixel_values.shape[2]
+    w = model_inputs.pixel_values.shape[3]
+    resized_depth = cv2.resize(depth, (h, w), interpolation=cv2.INTER_LINEAR)
+
+    image = model_inputs.pixel_values
+    example["pixel_values"] = image.reshape(-1, image.shape[2], image.shape[3]).tolist()
+    example["pixel_values"].append(resized_depth.tolist())
     example["mask_labels"] = model_inputs.mask_labels[0].tolist()
     example["class_labels"] = model_inputs.class_labels[0]
 
@@ -350,6 +389,13 @@ register = {
     },
     "0.0.6": {
         "map": map_7channel_s,
+        "trans": no_augment_and_transform,
+        "feature": [IMG()],
+        "num_proc": 1,
+        "writer_batch_size": 50
+    },
+    "0.0.7": {
+        "map": map_7channel_s2,
         "trans": no_augment_and_transform,
         "feature": [IMG()],
         "num_proc": 1,
