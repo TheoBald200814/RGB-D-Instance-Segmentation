@@ -27,6 +27,7 @@ from utils.dataloader import collate_fn_v2, dataloader
 from utils.model_essential_part import find_last_checkpoint, Evaluator
 from utils.log import setup_logging
 from utils.custom_model import CustomMask2FormerForUniversalSegmentation
+from predictor import process_prediction
 
 logger = logging.getLogger(__name__)
 
@@ -116,10 +117,25 @@ def main():
         trainer.save_state()
 
     # Final evaluation
-    if training_args.do_eval:
-        metrics = trainer.evaluate(eval_dataset=dataset["validation"], metric_key_prefix="test")
-        trainer.log_metrics("test", metrics)
-        trainer.save_metrics("test", metrics)
+    # if training_args.do_eval:
+    #     metrics = trainer.evaluate(eval_dataset=dataset["validation"], metric_key_prefix="test")
+    #     trainer.log_metrics("test", metrics)
+    #     trainer.save_metrics("test", metrics)
+
+    # predictor
+    # test_dataset = dataset["validation"].select(range(0, 1))
+    result = trainer.predict(test_dataset=dataset["validation"])
+    test_dataset = dataset["validation"]
+    process_prediction(result=result,
+                       image_processor=image_processor,
+                       test_dataset=test_dataset,
+                       version=args.version,
+                       save_dir=None,
+                       save_json_format=True if args.pred_json_path is not None else False,
+                       json_save_dir=args.pred_json_path,
+                       save_gt_json=True if args.gt_json_path is not None else False,
+                       gt_json_save_dir=args.gt_json_path
+    )
 
     # Write model card and (optionally) push to hub
     kwargs = {

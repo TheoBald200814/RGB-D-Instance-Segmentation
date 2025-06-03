@@ -97,3 +97,19 @@ class Arguments:
             )
         }
     )
+    pred_json_path: str = field(
+        default=None,
+        metadata={
+            "help": (
+                "the path of pred json file"
+            )
+        }
+    )
+    gt_json_path: str = field(
+        default=None,
+        metadata={
+            "help": (
+                "the path of gt json file"
+            )
+        }
+    )
