@@ -1413,6 +1413,106 @@ def calculate_surface_normals(depth_np: np.ndarray, camera_intrinsics: dict = No
 
     return unit_normals, valid_normal_mask
 
+def extract_image_paths_from_json(json_file_path):
+    """
+    Scans a JSON file with the specified structure and extracts all image paths.
+
+    The expected JSON structure is a list of objects, where each object
+    contains an "image" key with the image file path as its value.
+
+    Args:
+        json_file_path (str): The path to the input JSON file.
+
+    Returns:
+        list: A list of strings, where each string is an image file path.
+              Returns an empty list if the file is not found, invalid JSON,
+              or has an unexpected structure.
+    """
+    if not os.path.exists(json_file_path):
+        print(f"Error: JSON file not found at {json_file_path}")
+        return []
+
+    try:
+        with open(json_file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON from {json_file_path}: {e}")
+        return []
+    except Exception as e: # Catch other potential file reading errors
+        print(f"Error reading file {json_file_path}: {e}")
+        return []
+
+
+    if not isinstance(data, list):
+        print(f"Error: JSON data is not a list in {json_file_path}")
+        return []
+
+    image_paths = []
+    for i, item in enumerate(data):
+        # Check if the item is a dictionary and contains the "image" key
+        if isinstance(item, dict) and "annotation" in item:
+            # Check if the value associated with "image" is a string
+            if isinstance(item["annotation"], str):
+                image_paths.append(item["annotation"])
+            else:
+                print(f"Warning: Item {i} in {json_file_path} has 'image' value that is not a string: {item['annotation']}. Skipping.")
+        else:
+            # Optionally print a warning for items that don't match the expected structure
+            # print(f"Warning: Skipping item {i} with unexpected structure in {json_file_path}. Expected a dictionary with an 'image' key.")
+            pass # Silently skip items that don't have the expected structure
+
+    return image_paths
+
+def extract_image_paths_from_json2(json_file_path):
+    """
+    Scans a JSON file with the specified structure and extracts all image paths.
+
+    The expected JSON structure is a list of objects, where each object
+    contains an "image" key with the image file path as its value.
+
+    Args:
+        json_file_path (str): The path to the input JSON file.
+
+    Returns:
+        list: A list of strings, where each string is an image file path.
+              Returns an empty list if the file is not found, invalid JSON,
+              or has an unexpected structure.
+    """
+    if not os.path.exists(json_file_path):
+        print(f"Error: JSON file not found at {json_file_path}")
+        return []
+
+    try:
+        with open(json_file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON from {json_file_path}: {e}")
+        return []
+    except Exception as e: # Catch other potential file reading errors
+        print(f"Error reading file {json_file_path}: {e}")
+        return []
+
+
+    if not isinstance(data, list):
+        print(f"Error: JSON data is not a list in {json_file_path}")
+        return []
+
+    image_paths = []
+    for i, item in enumerate(data):
+        # Check if the item is a dictionary and contains the "image" key
+        if isinstance(item, dict) and "image" in item:
+            # Check if the value associated with "image" is a string
+            if isinstance(item["image"], str):
+                image_paths.append(item["image"])
+            else:
+                print(f"Warning: Item {i} in {json_file_path} has 'image' value that is not a string: {item['image']}. Skipping.")
+        else:
+            # Optionally print a warning for items that don't match the expected structure
+            # print(f"Warning: Skipping item {i} with unexpected structure in {json_file_path}. Expected a dictionary with an 'image' key.")
+            pass # Silently skip items that don't have the expected structure
+
+    return image_paths
+
 
 def main():
     image_dir = "dataset/local/coco82/color"

@@ -107,6 +107,32 @@ class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
             self.dsam1 = DSAModule(in_channels=192, out_channels=384, num_depth_regions=3)
             self.dsam2 = DSAModule(in_channels=384, out_channels=768, num_depth_regions=3)
 
+        elif self.version == '0.3.0': # 10 channel (RGB, Depth, 3Gradient-Depth, 3Gradient-Depth-Mask)
+            self.depth_encoder = load_backbone(config)
+
+            # Define the channel counts for the RatioPredictor
+            depth_channels = [96, 192, 384, 768]
+            self.ratio_predictor = RatioPredictor(depth_channels_list=depth_channels)
+            self.dsam0 = DSAModule(in_channels=96, out_channels=192, num_depth_regions=3)
+            self.dsam1 = DSAModule(in_channels=192, out_channels=384, num_depth_regions=3)
+            self.dsam2 = DSAModule(in_channels=384, out_channels=768, num_depth_regions=3)
+
+            color_map_channels = [96, 192, 384, 768]
+            self.depth_gradient_injection = DepthGradientInjectionResidual(color_map_channels, 3)
+
+        elif self.version == '0.4.0': # 10 channel (RGB, Depth, Gradient-Depth, Gradient-Depth-Mask)
+
+            # Define the channel counts for the RatioPredictor
+            # self.ratio_predictor = DepthImageRatioPredictor(3)
+            self.ratio_predictor = EnhancedDepthImageRatioPredictor(3)
+
+            self.dsam0 = DSAModule(in_channels=96, out_channels=192, num_depth_regions=3)
+            self.dsam1 = DSAModule(in_channels=192, out_channels=384, num_depth_regions=3)
+            self.dsam2 = DSAModule(in_channels=384, out_channels=768, num_depth_regions=3)
+
+            color_map_channels = [96, 192, 384, 768]
+            self.depth_gradient_injection = DepthGradientInjectionResidual(color_map_channels, 3)
+
         else: # 9 channel (RGB, Depth, Fused_depth)
             self.depth_encoder = load_backbone(config)
             self.feature_fuser = FeatureFuser()
@@ -262,6 +288,71 @@ class CustomMask2FormerPixelLevelModule(Mask2FormerPixelLevelModule):
             cp_color_feature_map[3] += dsam_output2
 
             backbone_features = cp_color_feature_map
+
+        elif self.version == '0.3.0':
+            rgb = pixel_values[:, 0:3, :, :]
+            depth = pixel_values[:, 3:6, :, :]
+            gradient_depth = pixel_values[:, 6:9, :, :]
+            gradient_mask = pixel_values[:, 9:10, :, :]
+
+            color_feature_map = self.encoder(rgb).feature_maps
+            depth_feature_map = self.depth_encoder(depth).feature_maps
+            cp_color_feature_map = list(color_feature_map)
+            cp_depth_feature_map = list(depth_feature_map)
+
+            # Predict window_size_ratio
+            predicted_ratios = self.ratio_predictor(cp_depth_feature_map)
+
+            # DSAM
+            dsam_output0 = [self.dsam0(i.unsqueeze(0), self.to_grayscale(j), k.item()) for i, j, k in
+                            zip(cp_color_feature_map[0], depth, predicted_ratios)]  # [B, 96, 64, 64]
+            dsam_output0 = torch.stack(dsam_output0, dim=0).squeeze(1)  # [B, 192, 32, 32]
+            cp_color_feature_map[1] += dsam_output0
+
+            dsam_output1 = [self.dsam1(i.unsqueeze(0), self.to_grayscale(j), k.item()) for i, j, k in
+                            zip(cp_color_feature_map[1], depth, predicted_ratios)]  # [B, 192, 32, 32]
+            dsam_output1 = torch.stack(dsam_output1, dim=0).squeeze(1)  # [B, 384, 16, 16]
+            cp_color_feature_map[2] += dsam_output1
+
+            dsam_output2 = [self.dsam2(i.unsqueeze(0), self.to_grayscale(j), k.item()) for i, j, k in
+                            zip(cp_color_feature_map[2], depth, predicted_ratios)]  # [B, 384, 16, 16]
+            dsam_output2 = torch.stack(dsam_output2, dim=0).squeeze(1)  # [B, 768, 16, 16]
+            cp_color_feature_map[3] += dsam_output2
+
+            backbone_features = self.depth_gradient_injection(cp_color_feature_map, gradient_depth, gradient_mask)
+
+        elif self.version == '0.4.0':
+            rgb = pixel_values[:, 0:3, :, :]
+            depth = pixel_values[:, 3:6, :, :]
+            gradient_depth = pixel_values[:, 6:9, :, :]
+            gradient_mask = pixel_values[:, 9:10, :, :]
+
+            color_feature_map = self.encoder(rgb).feature_maps
+            # cp_color_feature_map = list(color_feature_map)
+            cp1_color_feature_map = [t.detach().clone() for t in list(color_feature_map)]
+            cp2_color_feature_map = [t.detach().clone() for t in list(color_feature_map)]
+
+            # Predict window_size_ratio
+            predicted_ratios = self.ratio_predictor(depth)
+
+            # DSAM
+            dsam_output0 = [self.dsam0(i.unsqueeze(0), self.to_grayscale(j), k.item()) for i, j, k in
+                            zip(cp1_color_feature_map[0], depth, predicted_ratios)]  # [B, 96, 64, 64]
+            dsam_output0 = torch.stack(dsam_output0, dim=0).squeeze(1)  # [B, 192, 32, 32]
+            cp1_color_feature_map[1] += dsam_output0
+
+            dsam_output1 = [self.dsam1(i.unsqueeze(0), self.to_grayscale(j), k.item()) for i, j, k in
+                            zip(cp1_color_feature_map[1], depth, predicted_ratios)]  # [B, 192, 32, 32]
+            dsam_output1 = torch.stack(dsam_output1, dim=0).squeeze(1)  # [B, 384, 16, 16]
+            cp1_color_feature_map[2] += dsam_output1
+
+            dsam_output2 = [self.dsam2(i.unsqueeze(0), self.to_grayscale(j), k.item()) for i, j, k in
+                            zip(cp1_color_feature_map[2], depth, predicted_ratios)]  # [B, 384, 16, 16]
+            dsam_output2 = torch.stack(dsam_output2, dim=0).squeeze(1)  # [B, 768, 16, 16]
+            cp1_color_feature_map[3] += dsam_output2
+
+            cp2_color_feature_map = self.depth_gradient_injection(cp2_color_feature_map, gradient_depth, gradient_mask)
+            backbone_features = [i + j for i, j in zip(cp1_color_feature_map, cp2_color_feature_map)]
 
         else: # 9 channel
             rgb = pixel_values[:, 0:3, :, :]
@@ -1177,6 +1268,223 @@ class DepthGradientInjectionResidual(nn.Module):
 
         return fused_feature_maps
 
+
+class DepthImageRatioPredictor(nn.Module):
+    """
+    使用3通道深度图预测window_size_ratio的模块。
+    与RatioPredictor兼容，可以直接替换使用。
+    """
+
+    def __init__(self, input_channels: int = 3):
+        """
+        Args:
+            input_channels (int): 输入深度图的通道数，默认为3
+        """
+        super().__init__()
+        self.input_channels = input_channels
+
+        # 深度图特征提取网络
+        # 使用轻量级的卷积网络来提取深度图特征
+        self.depth_feature_extractor = nn.Sequential(
+            # 第一层：提取基础特征
+            nn.Conv2d(input_channels, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2),  # 降采样
+
+            # 第二层：提取中级特征
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2),  # 降采样
+
+            # 第三层：提取高级特征
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2),  # 降采样
+
+            # 第四层：进一步特征抽象
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+        )
+
+        # 全局平均池化层，将空间维度压缩为1x1
+        self.global_avg_pool = nn.AdaptiveAvgPool2d(1)
+
+        # 全连接层，与原RatioPredictor保持相似的结构
+        self.fc_layers = nn.Sequential(
+            nn.Linear(256, 64),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),  # 添加dropout防止过拟合
+            nn.Linear(64, 32),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(32, 1)  # 输出单个标量比率
+        )
+
+        # 输出范围约束，与原模块保持一致
+        self.output_min = 0.01  # 最小比率
+        self.output_max = 0.5  # 最大比率
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, depth_image: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            depth_image (torch.Tensor): 3通道深度图，形状为 (B, 3, H, W)
+
+        Returns:
+            torch.Tensor: 预测的window_size_ratio，形状为 (B, 1)
+        """
+        # 验证输入形状
+        assert depth_image.dim() == 4, f"Expected 4D tensor, got {depth_image.dim()}D"
+        assert depth_image.shape[1] == self.input_channels, \
+            f"Expected {self.input_channels} channels, got {depth_image.shape[1]}"
+
+        # 通过卷积网络提取深度特征
+        depth_features = self.depth_feature_extractor(depth_image)  # (B, 256, H', W')
+
+        # 全局平均池化
+        pooled_features = self.global_avg_pool(depth_features)  # (B, 256, 1, 1)
+
+        # 展平特征
+        flattened_features = pooled_features.squeeze(-1).squeeze(-1)  # (B, 256)
+
+        # 通过全连接层预测比率
+        raw_ratio = self.fc_layers(flattened_features)  # (B, 1)
+
+        # 应用约束将输出映射到[output_min, output_max]范围
+        predicted_ratio = self.output_min + (self.output_max - self.output_min) * self.sigmoid(raw_ratio)
+
+        return predicted_ratio
+
+
+class EnhancedDepthImageRatioPredictor(nn.Module):
+    """
+    增强版的深度图比率预测器，包含多尺度特征提取和注意力机制。
+    与RatioPredictor完全兼容。
+    """
+
+    def __init__(self, input_channels: int = 3):
+        """
+        Args:
+            input_channels (int): 输入深度图的通道数，默认为3
+        """
+        super().__init__()
+        self.input_channels = input_channels
+
+        # 多尺度特征提取分支
+        self.scale1_conv = nn.Sequential(
+            nn.Conv2d(input_channels, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+        )
+
+        self.scale2_conv = nn.Sequential(
+            nn.Conv2d(input_channels, 64, kernel_size=5, padding=2),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+        )
+
+        self.scale3_conv = nn.Sequential(
+            nn.Conv2d(input_channels, 64, kernel_size=7, padding=3),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+        )
+
+        # 特征融合层
+        self.feature_fusion = nn.Sequential(
+            nn.Conv2d(192, 128, kernel_size=1),  # 3*64=192
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+        )
+
+        # 注意力机制
+        self.attention = nn.Sequential(
+            nn.Conv2d(128, 64, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 128, kernel_size=1),
+            nn.Sigmoid()
+        )
+
+        # 进一步特征提取
+        self.feature_extractor = nn.Sequential(
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d(4),  # 固定输出尺寸
+
+            nn.Conv2d(256, 512, kernel_size=3, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+        )
+
+        # 全局池化
+        self.global_avg_pool = nn.AdaptiveAvgPool2d(1)
+
+        # 全连接层
+        self.fc_layers = nn.Sequential(
+            nn.Linear(512, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(128, 64),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(64, 32),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, 1)
+        )
+
+        # 输出约束
+        self.output_min = 0.01
+        self.output_max = 0.5
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, depth_image: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            depth_image (torch.Tensor): 3通道深度图，形状为 (B, 3, H, W)
+
+        Returns:
+            torch.Tensor: 预测的window_size_ratio，形状为 (B, 1)
+        """
+        # 验证输入
+        assert depth_image.dim() == 4, f"Expected 4D tensor, got {depth_image.dim()}D"
+        assert depth_image.shape[1] == self.input_channels, \
+            f"Expected {self.input_channels} channels, got {depth_image.shape[1]}"
+
+        # 多尺度特征提取
+        scale1_features = self.scale1_conv(depth_image)  # (B, 64, H, W)
+        scale2_features = self.scale2_conv(depth_image)  # (B, 64, H, W)
+        scale3_features = self.scale3_conv(depth_image)  # (B, 64, H, W)
+
+        # 特征拼接
+        multi_scale_features = torch.cat([scale1_features, scale2_features, scale3_features], dim=1)  # (B, 192, H, W)
+
+        # 特征融合
+        fused_features = self.feature_fusion(multi_scale_features)  # (B, 128, H, W)
+
+        # 应用注意力机制
+        attention_weights = self.attention(fused_features)  # (B, 128, H, W)
+        attended_features = fused_features * attention_weights  # (B, 128, H, W)
+
+        # 进一步特征提取
+        extracted_features = self.feature_extractor(attended_features)  # (B, 512, 4, 4)
+
+        # 全局平均池化
+        pooled_features = self.global_avg_pool(extracted_features)  # (B, 512, 1, 1)
+
+        # 展平
+        flattened_features = pooled_features.squeeze(-1).squeeze(-1)  # (B, 512)
+
+        # 预测比率
+        raw_ratio = self.fc_layers(flattened_features)  # (B, 1)
+
+        # 应用约束
+        predicted_ratio = self.output_min + (self.output_max - self.output_min) * self.sigmoid(raw_ratio)
+
+        return predicted_ratio
 
 # "The features from different modalities of the same scale are always fused,
 # while features in different scales are selectively fused."

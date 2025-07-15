@@ -340,6 +340,90 @@ def map_7channel_s2(example, transform, image_processor):
 def map_9channel(example, transform, image_processor):
     pass
 
+# Input: RGB(3 channel) + Depth(3 channel) + 3Gradient-Depth(3 channel) = 9 channel
+# Output: RGB(3 channel) + Depth(3 channel) + 3Gradient-Depth(3 channel) + 3Gradient-Depth-Mask(1 channel) = 10 channel
+def map_10channel_case1(example, transform, image_processor):
+    assert len(example["image"]) >= 2, "the dataset not include multi-modal image"
+    example["image"] = [example["image"][0], example["image"][1].convert('RGB'), example["image"][2].convert('RGB')]
+
+    mask = cv2.imread(example["annotation"], cv2.IMREAD_UNCHANGED)
+    semantic_and_instance_masks = mask[..., 1:]
+    image = np.array(example["image"])
+    image = image.transpose(1, 2, 0, 3).reshape(image.shape[1], image.shape[2], -1)
+    output = transform(image=image, mask=semantic_and_instance_masks)
+    aug_image = output["image"]
+    aug_semantic_and_instance_masks = output["mask"]
+    aug_instance_mask = aug_semantic_and_instance_masks[..., 0]
+
+    # Create mapping from instance id to semantic id
+    unique_instance_id_semantic_id_pairs = np.unique(aug_semantic_and_instance_masks.reshape(-1, 2), axis=0)
+    instance_id_to_semantic_id = {
+        instance_id: semantic_id for instance_id, semantic_id in unique_instance_id_semantic_id_pairs
+    }
+
+    model_inputs = image_processor(
+        images=[aug_image[..., :3], aug_image[..., 3:6], aug_image[..., 6:9]],
+        segmentation_maps=[aug_instance_mask, aug_instance_mask, aug_instance_mask],
+        instance_id_to_semantic_id=instance_id_to_semantic_id,
+        return_tensors="pt",
+    )
+
+    h = model_inputs.pixel_values.shape[2]
+    w = model_inputs.pixel_values.shape[3]
+    resized_depth = cv2.resize(aug_image[..., 6:9], (h, w), interpolation=cv2.INTER_LINEAR)
+    gradient_mask = np.any(resized_depth > 50, axis=-1).tolist()
+
+    image = model_inputs.pixel_values
+    example["pixel_values"] = image.reshape(-1, image.shape[2], image.shape[3]).tolist()
+    example["pixel_values"].append(gradient_mask)
+    example["mask_labels"] = model_inputs.mask_labels[0].tolist()
+    example["class_labels"] = model_inputs.class_labels[0]
+
+    return example
+
+# Input: RGB(3 channel) + Depth(3 channel) = 6 channel
+# Output: RGB(3 channel) + Depth(3 channel) + Gradient-Depth(3 channel) + Gradient-Depth-Mask(1 channel) = 10 channel
+def map_10channel_case2(example, transform, image_processor):
+    assert len(example["image"]) >= 2, "the dataset not include multi-modal image"
+    color = np.array(example["image"][0])  # (H, W, 3)
+    depth = np.array(example["image"][1].convert('L'))  # (H, W)
+    depth_colorful = np.array(example["image"][1].convert('RGB'))
+    mask = cv2.imread(example["annotation"], cv2.IMREAD_UNCHANGED)  # (H, W, 3)
+
+    semantic_and_instance_masks = mask[..., 1:]
+    output = transform(image=color, mask=semantic_and_instance_masks)
+    aug_color = output["image"]
+    aug_semantic_and_instance_masks = output["mask"]
+    aug_instance_mask = aug_semantic_and_instance_masks[..., 0]
+
+    # Create mapping from instance id to semantic id
+    unique_instance_id_semantic_id_pairs = np.unique(aug_semantic_and_instance_masks.reshape(-1, 2), axis=0)
+    instance_id_to_semantic_id = {
+        instance_id: semantic_id for instance_id, semantic_id in unique_instance_id_semantic_id_pairs
+    }
+
+    model_inputs = image_processor(
+        images=[aug_color, depth_colorful],
+        segmentation_maps=[aug_instance_mask, aug_instance_mask],
+        instance_id_to_semantic_id=instance_id_to_semantic_id,
+        return_tensors="pt",
+    )
+
+    h = model_inputs.pixel_values.shape[2]
+    w = model_inputs.pixel_values.shape[3]
+    resized_depth = cv2.resize(depth, (h, w), interpolation=cv2.INTER_LINEAR)
+    normalized_magnitude, grad_x, grad_y, valid_gradient_mask = calculate_gradient_features(resized_depth)
+    colorful_gradient_depth = np.stack([normalized_magnitude, normalized_magnitude, normalized_magnitude], axis=0).tolist()
+
+    image = model_inputs.pixel_values
+    example["pixel_values"] = image.reshape(-1, image.shape[2], image.shape[3]).tolist()
+    example["pixel_values"] += colorful_gradient_depth
+    example["pixel_values"].append(valid_gradient_mask.tolist())
+    example["mask_labels"] = model_inputs.mask_labels[0].tolist()
+    example["class_labels"] = model_inputs.class_labels[0]
+
+    return example
+
 
 
 
@@ -434,6 +518,20 @@ register = {
         "trans": no_augment_and_transform,
         "feature": [IMG()],
         "num_proc": 4,
+        "writer_batch_size": 50
+    },
+    "0.3.0": {
+        "map": map_10channel_case1,
+        "trans": no_augment_and_transform,
+        "feature": [IMG()],
+        "num_proc": 4,
+        "writer_batch_size": 50
+    },
+    "0.4.0": {
+        "map": map_10channel_case2,
+        "trans": no_augment_and_transform,
+        "feature": [IMG()],
+        "num_proc": 1,
         "writer_batch_size": 50
     }
 }
