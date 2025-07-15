@@ -10,16 +10,17 @@
 - 基于虾类图像数据，学习虾及其脏器图像区域特征，执行较为精确的实例分割任务。
 
 ## 实验清单
-| 编号  | 内容                                                                                                                              | 状态  |    日期     |
-|:---:|---------------------------------------------------------------------------------------------------------------------------------|-----|:---------:|
-| 实验一 | 测试Mask2Former各模块之间的数据传递格式(例如Backbone的input格式和output格式)                                                                          | 已完成 | 25/03/13  |
-| 实验二 | 准备小规模实验数据集，作为对照实验(使用指定seed训练)，训练标准Mask2Former模型，并得到validation数据                                                                 | 已完成 | 24/12/19  |
-| 实验三 | 继承标准模型使用的Config类、Backbone(Swin)类、Pixel decoder类、Transformer类，使用上述seed进行训练，验证得出的validation数据是否一致                                 | 已完成 | 24/12/20  |
-| 实验四 | 扩展深度数据输入流：改造数据集配置文件(.json)、load_dataset策略、augment_and_transform、CustomMask2FormerForUniversalSegmentation.forward中的pixel_calues | 已完成 | 25/03/13  |
-| 实验五 | 扩展Mask2FormerPixelLevelModule中的backbone(encoder),实现颜色数据和深度数据的分立特征提取、特征融合                                                        | 已完成 | 25_03_14  |
-| 实验六 | 构造DSA模块（深度频率统计、深度阈值分解、深度敏感注意力机制），测试本地数据集                                                                                        | 已完成 | 25/03/23  |
-| 实验七 | 构造CSF模块（余弦相似度矩阵、CSFed Image生成算法、可视化监控模块），测试本地数据集                                                                                | 已完成 | 25/03/23  |
-| 实验八 | 基于实验五的“通用数据集”基准测试                                                                                                               | 已完成 | 25/03/21  |
+| 编号  | 内容                                                                                                                              | 状态  |    日期    |
+|:---:|---------------------------------------------------------------------------------------------------------------------------------|-----|:--------:|
+| 实验一 | 测试Mask2Former各模块之间的数据传递格式(例如Backbone的input格式和output格式)                                                                          | 已完成 | 25/03/13 |
+| 实验二 | 准备小规模实验数据集，作为对照实验(使用指定seed训练)，训练标准Mask2Former模型，并得到validation数据                                                                 | 已完成 | 24/12/19 |
+| 实验三 | 继承标准模型使用的Config类、Backbone(Swin)类、Pixel decoder类、Transformer类，使用上述seed进行训练，验证得出的validation数据是否一致                                 | 已完成 | 24/12/20 |
+| 实验四 | 扩展深度数据输入流：改造数据集配置文件(.json)、load_dataset策略、augment_and_transform、CustomMask2FormerForUniversalSegmentation.forward中的pixel_calues | 已完成 | 25/03/13 |
+| 实验五 | 扩展Mask2FormerPixelLevelModule中的backbone(encoder),实现颜色数据和深度数据的分立特征提取、特征融合                                                        | 已完成 | 25_03_14 |
+| 实验六 | 构造DSA模块（深度频率统计、深度阈值分解、深度敏感注意力机制），测试本地数据集                                                                                        | 已完成 | 25/03/23 |
+| 实验七 | 构造CSF模块（余弦相似度矩阵、CSFed Image生成算法、可视化监控模块），测试本地数据集                                                                                | 已完成 | 25/03/23 |
+| 实验八 | 基于实验五的“通用数据集”基准测试                                                                                                               | 已完成 | 25/03/21 |
+| 实验九 | DSA模块中的深度阈值分解参数可学习化（使用额外的神经网络模块来预测window_size_ratio）                                                                                             | 已完成 | 25/05/07 |
 
 ## 实验路径
 ``` 
@@ -804,5 +805,123 @@ CSF构建完毕，待集成接入主模型
 |    mAP    |  0.693  | 0.4562  |
 |  mAP_50   | 0.7948  | 0.6351  |
 |  mAP_75   | 0.7877  |  0.54   |
+
+---
+
+### 实验九（DSA模块阈值分割部分参数可学习化）
+
+- DSA模块中的固定算法部分
+
+  |    算法     |         函数名         |               参数                |
+  |:---------:|:-------------------:|:-------------------------------:|
+  | 深度频率直方图统计 | ```_calculate_depth_histogram```|        bins, value_range        |
+  | 深度分布模式选择  |       ```_select_depth_distribution_modes```              | num_modes, prominence_threshold |
+  | 深度区间窗口选择  |    ```_define_depth_interval_windows```                |        window_size_ratio        |
+  |  深度区域生成   |          ```_generate_depth_region_masks```           |                -                |
+
+- window_size_ratio 观察
+
+  原始深度图
+![original](../../../log/25_05_07/window_size_ratio_original.png)
+
+  windows_size_ratio=0.01
+![0.01](../../../log/25_05_07/window_size_ratio_0.01.png)
+
+  windows_size_ratio=0.1
+![0.1](../../../log/25_05_07/window_size_ratio_0.1.png)
+
+  windows_size_ratio=0.05
+![0.5](../../../log/25_05_07/window_size_ratio_0.5.png)
+
+  windows_size_ratio=0.8
+![0.8](../../../log/25_05_07/window_size_ratio_0.8.png)
+
+  windows_size_ratio=1.0
+![1.0](../../../log/25_05_07/window_size_ratio_1.0.png)
+
+根据如上观测可知，采用不同的window_size_ratio阈值，对深度图像的阈值分割效果具有显著影响。
+为了增强模型对于不同数据集（尤其是不同深度图像而言）的泛化能力，本实验考虑将```window_size_ratio```
+定义为一个动态参数，依赖深度学习策略进行自适应调整。
+
+为了实现上述需求，在```custom_model.py```中扩展一个神经网络模块用于捕获深度图像特征，并预测```window_size_ratio```。
+
+```python
+class RatioPredictor(nn.Module):
+    """
+    Predicts the window_size_ratio based on multi-scale input features.
+    Takes a list of feature maps from a backbone.
+    """
+    def __init__(self, depth_channels_list: list[int]):
+        """
+        Args:
+            depth_channels_list (list[int]): A list of channel counts for the
+                                             depth feature maps at each scale
+                                             (e.g., [96, 192, 384, 768]).
+        """
+        super().__init__()
+        self.depth_channels_list = depth_channels_list
+        self.num_scales = len(depth_channels_list)
+
+        # Calculate the total number of features after pooling and concatenation
+        # This will be the sum of the channel counts from all scales
+        total_pooled_features = sum(depth_channels_list)
+
+        # Define the fully connected layers that take the concatenated features
+        self.fc_layers = nn.Sequential(
+            nn.Linear(total_pooled_features, 64),
+            nn.ReLU(inplace=True),
+            nn.Linear(64, 32),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, 1) # Output a single scalar ratio per image in the batch
+        )
+
+        # Global Average Pooling layer to reduce spatial dimensions
+        self.global_avg_pool = nn.AdaptiveAvgPool2d(1)
+
+        # Constrain the output range of the parameter (ratio)
+        self.output_min = 0.01 # Example minimum ratio
+        self.output_max = 0.5  # Example maximum ratio
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, depth_feature_maps: list[torch.Tensor]) -> torch.Tensor:
+        """
+        Args:
+            depth_feature_maps (list[torch.Tensor]): A list of depth feature maps
+                                                    from the depth backbone at different scales.
+                                                    Shapes: [(B, C1, H1, W1), (B, C2, H2, W2), ...].
+
+        Returns:
+            torch.Tensor: Predicted window_size_ratio (B, 1).
+        """
+        assert len(depth_feature_maps) == self.num_scales, \
+            f"Expected {self.num_scales} depth feature maps, but got {len(depth_feature_maps)}"
+
+        pooled_features = []
+        for i, feature_map in enumerate(depth_feature_maps):
+            # Ensure channel count matches expected
+            assert feature_map.shape[1] == self.depth_channels_list[i], \
+                f"Expected {self.depth_channels_list[i]} channels for scale {i}, but got {feature_map.shape[1]}"
+
+            # Apply Global Average Pooling
+            pooled = self.global_avg_pool(feature_map) # Shape (B, C_i, 1, 1)
+
+            # Squeeze spatial dimensions to get (B, C_i)
+            pooled = pooled.squeeze(-1).squeeze(-1) # Shape (B, C_i)
+
+            pooled_features.append(pooled)
+
+        # Concatenate pooled features from all scales along the channel dimension (dim=1)
+        # Resulting shape will be (B, sum(C_i))
+        concatenated_features = torch.cat(pooled_features, dim=1)
+
+        # Pass the concatenated features through the fully connected layers
+        raw_ratio = self.fc_layers(concatenated_features) # Shape (B, 1)
+
+        # Apply constraint to map output to [output_min, output_max]
+        predicted_ratio = self.output_min + (self.output_max - self.output_min) * self.sigmoid(raw_ratio) # Shape (B, 1)
+
+        return predicted_ratio
+```
+
 
 

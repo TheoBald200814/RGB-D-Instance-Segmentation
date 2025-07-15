@@ -2,6 +2,7 @@ import json
 import os
 import xml.etree.ElementTree as ET
 from collections import defaultdict
+import datetime # Added for COCO info
 
 import numpy as np
 from PIL import Image
@@ -81,6 +82,60 @@ def rle_to_mask(segmentation, height, width):
     if mask.ndim == 3:
         mask = np.sum(mask, axis=2)
     return (mask > 0).astype(np.uint8) # Ensure binary mask
+
+def mask_to_polygon(binary_mask):
+    """
+    Convert a binary mask to COCO polygon format.
+    Handles multiple disconnected regions and holes.
+
+    Args:
+        binary_mask (np.ndarray): A 2D numpy array (H, W) of dtype uint8,
+                                  where pixels belonging to the object are > 0.
+
+    Returns:
+        list: A list of flattened polygon coordinates [x1, y1, x2, y2, ...].
+              Returns an empty list if no contours are found or mask is empty.
+    """
+    # Ensure mask is binary (0 or 255) for findContours
+    mask = binary_mask.astype(np.uint8) * 255
+
+    # Find contours using RETR_TREE to get hierarchy (for holes)
+    # Use CHAIN_APPROX_SIMPLE to compress horizontal, vertical, and diagonal segments
+    contours, hierarchy = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+    if not contours:
+        return []
+
+    segmentation = []
+    # hierarchy is (num_contours, 1, 4) array: [Next, Previous, First_Child, Parent]
+    # We only care about outer contours (Parent == -1) and their children (holes)
+    # Iterate through contours and their hierarchy
+    for i, contour in enumerate(contours):
+        # Check if it's an outer contour (no parent)
+        if hierarchy[0][i][3] == -1:
+            # This is an outer boundary. Add its points.
+            # Reshape from (N, 1, 2) to (N, 2) and flatten
+            polygon = contour.reshape(-1).tolist()
+
+            # Check for holes (children)
+            child_idx = hierarchy[0][i][2] # Index of the first child
+            while child_idx != -1:
+                # This is a hole. Add its points.
+                hole_contour = contours[child_idx]
+                hole_polygon = hole_contour.reshape(-1).tolist()
+                polygon.extend(hole_polygon) # Add hole points to the same segmentation list
+
+                # Move to the next sibling hole
+                child_idx = hierarchy[0][child_idx][0] # Index of the next contour at the same level
+
+            # COCO requires polygons with at least 6 points (3 vertices)
+            if len(polygon) >= 6:
+                 segmentation.append(polygon)
+
+    # Filter out empty segmentations that might result from small contours
+    segmentation = [poly for poly in segmentation if poly]
+
+    return segmentation
 
 
 # --- Converter Class ---
@@ -495,7 +550,7 @@ class AnnotationConverter:
             print("The following source categories were found but not present in your category_mapping.json:")
             for cat in unmapped_categories:
                 print(f"- {cat}")
-            print("Annotations with these categories were skipped.")
+            print("Annotations with these categories were skipped during mask generation.")
             print("-------------------------------------------\n")
 
         print(f"\nConversion complete. Processed {processed_images_count} images.")
@@ -600,10 +655,238 @@ class AnnotationConverter:
 
         return dict(instance_counts) # Return as a regular dictionary
 
+    # --- NEW MEMBER FUNCTION: Convert to COCO JSON ---
+    def convert_to_coco_json(self, output_json_path, mask_dir=None):
+        """
+        Converts the 3-channel mask files into a COCO format JSON annotation file.
+        Segmentation is represented as polygons.
+
+        Args:
+            output_json_path (str): The path where the output COCO JSON file will be saved.
+            mask_dir (str, optional): Directory containing the 3-channel mask files.
+                                      If None, uses the output_dir specified during initialization.
+                                      Defaults to None.
+        """
+        target_mask_dir = mask_dir if mask_dir is not None else self.output_dir
+
+        if not os.path.isdir(target_mask_dir):
+            print(f"Error: Mask directory not found or is not a directory: {target_mask_dir}")
+            return
+
+        print(f"\nConverting masks from {target_mask_dir} to COCO JSON: {output_json_path}")
+
+        coco_output = {
+            "info": {
+                "description": "Converted from 3-channel masks",
+                "version": "1.0",
+                "year": datetime.datetime.now().year,
+                "date_created": datetime.datetime.now().strftime("%Y/%m/%d"),
+            },
+            "licenses": [], # Add license info if available
+            "images": [],
+            "annotations": [],
+            "categories": []
+        }
+
+        # Prepare categories list for COCO JSON
+        # COCO categories typically don't include background (ID 0)
+        # Create an inverse mapping from target_id to source_info for category names
+        target_id_to_source_info = {v: k for k, v in self.category_mapping.items()}
+
+        # Sort categories by target ID for consistent output
+        sorted_target_ids = sorted([v for v in self.category_mapping.values() if v != TARGET_BACKGROUND_ID])
+
+        for target_id in sorted_target_ids:
+             source_info = target_id_to_source_info.get(target_id, f"Target_ID_{target_id}")
+             # Use the source info as the category name. If it was an int, it will be a string.
+             category_name = str(source_info)
+             coco_output["categories"].append({
+                 "id": target_id,
+                 "name": category_name,
+                 "supercategory": "none" # Or derive from mapping if available
+             })
+
+        image_id_counter = 0
+        annotation_id_counter = 0
+
+        mask_files = [f for f in os.listdir(target_mask_dir) if f.endswith('.png')] # Assuming PNG output
+
+        if not mask_files:
+            print(f"No PNG mask files found in {target_mask_dir}. No COCO JSON will be generated.")
+            return
+
+        for mask_filename in tqdm(mask_files, desc="Generating COCO annotations"):
+            mask_path = os.path.join(target_mask_dir, mask_filename)
+            # Assume original image filename is the same base name
+            image_filename = os.path.splitext(mask_filename)[0] + os.path.splitext(os.listdir(self.image_dir)[0])[1] # Try to guess original extension
+
+            # Get image size from the original image file
+            image_path = os.path.join(self.image_dir, image_filename)
+            img_size = get_image_size(image_path)
+            if img_size is None:
+                 print(f"Skipping COCO annotation for {image_filename} due to size error.")
+                 continue
+            img_width, img_height = img_size
+
+            # Add image info
+            image_id_counter += 1
+            current_image_id = image_id_counter
+            coco_output["images"].append({
+                "id": current_image_id,
+                "width": img_width,
+                "height": img_height,
+                "file_name": image_filename
+            })
+
+            try:
+                # Use OpenCV to load the 3-channel mask, preserving uint16 depth
+                mask = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)
+
+                if mask is None:
+                    print(f"Warning: Could not load mask file {mask_filename} for COCO conversion. Skipping.")
+                    continue
+
+                # Ensure it's a 3-channel mask as expected
+                if mask.ndim != 3 or mask.shape[2] != TARGET_MASK_CHANNELS:
+                    print(f"Warning: Mask file {mask_filename} is not {TARGET_MASK_CHANNELS} channels ({mask.ndim} dims or {mask.shape[2]} channels) for COCO conversion. Skipping.")
+                    continue
+
+                # Extract the instance and semantic channels
+                instance_channel = mask[:, :, TARGET_INSTANCE_CHANNEL]
+                semantic_channel = mask[:, :, TARGET_SEMANTIC_CHANNEL]
+
+                # --- Process Instances (iscrowd=0) ---
+                unique_instance_ids = np.unique(instance_channel)
+                instance_ids_in_mask = unique_instance_ids[unique_instance_ids != TARGET_BACKGROUND_ID]
+
+                for inst_id in instance_ids_in_mask:
+                    instance_mask = (instance_channel == inst_id).astype(np.uint8)
+
+                    # Find the corresponding semantic ID for this instance
+                    # Get the semantic ID at any pixel belonging to this instance
+                    locations = np.where(instance_mask > 0)
+                    if locations[0].size == 0:
+                         print(f"Warning: Instance ID {inst_id} in {mask_filename} has no pixels. Skipping annotation.")
+                         continue
+                    target_semantic_id = int(semantic_channel[locations[0][0], locations[1][0]]) # Ensure it's a standard int
+
+                    # Skip if semantic ID is background or not in categories list
+                    if target_semantic_id == TARGET_BACKGROUND_ID or target_semantic_id not in sorted_target_ids:
+                         # This instance belongs to a background or unmapped semantic category
+                         # print(f"Info: Instance ID {inst_id} in {mask_filename} has target semantic ID {target_semantic_id}, which is background or unmapped. Skipping instance annotation.")
+                         continue
+
+
+                    # Convert mask to polygon
+                    segmentation = mask_to_polygon(instance_mask)
+
+                    if not segmentation:
+                        # print(f"Warning: No valid polygon found for instance ID {inst_id} in {mask_filename}. Skipping annotation.")
+                        continue
+
+                    # Calculate area and bbox
+                    area = float(np.sum(instance_mask)) # Area is pixel count
+                    # Bbox: [x, y, width, height]
+                    y_coords, x_coords = np.where(instance_mask > 0)
+                    if y_coords.size > 0:
+                        x_min, x_max = np.min(x_coords), np.max(x_coords)
+                        y_min, y_max = np.min(y_coords), np.max(y_coords)
+                        bbox = [float(x_min), float(y_min), float(x_max - x_min + 1), float(y_max - y_min + 1)]
+                    else:
+                        bbox = [0.0, 0.0, 0.0, 0.0] # Should not happen if segmentation is not empty
+
+                    # Add annotation
+                    annotation_id_counter += 1
+                    coco_output["annotations"].append({
+                        "id": annotation_id_counter,
+                        "image_id": current_image_id,
+                        "category_id": target_semantic_id,
+                        "segmentation": segmentation,
+                        "area": area,
+                        "bbox": bbox,
+                        "iscrowd": 0 # Instances are not crowd
+                    })
+
+                # --- Process Stuff (iscrowd=1) ---
+                # Identify stuff pixels: instance_channel is 0 AND semantic_channel is not 0
+                stuff_mask_all = (instance_channel == TARGET_BACKGROUND_ID) & (semantic_channel != TARGET_BACKGROUND_ID)
+
+                # Find unique semantic IDs present in the stuff pixels
+                unique_stuff_semantic_ids = np.unique(semantic_channel[stuff_mask_all])
+
+                for target_semantic_id in unique_stuff_semantic_ids:
+                     # Skip if semantic ID is background or not in categories list
+                     if target_semantic_id == TARGET_BACKGROUND_ID or target_semantic_id not in sorted_target_ids:
+                          # print(f"Info: Stuff region with target semantic ID {target_semantic_id} in {mask_filename} is background or unmapped. Skipping stuff annotation.")
+                          continue
+
+                     # Create a mask for the current stuff semantic region
+                     current_stuff_semantic_mask = (semantic_channel == target_semantic_id) & stuff_mask_all
+
+                     if np.sum(current_stuff_semantic_mask) == 0:
+                          continue # Should be covered by unique_stuff_semantic_ids check, but safe
+
+                     # Find connected components in this stuff region
+                     num_labels, labels_img, stats, centroids = cv2.connectedComponentsWithStats(current_stuff_semantic_mask.astype(np.uint8), 8, cv2.CV_32S)
+
+                     # Iterate through each connected component (excluding background label 0)
+                     for i in range(1, num_labels):
+                          component_mask = (labels_img == i).astype(np.uint8)
+
+                          if np.sum(component_mask) == 0:
+                               continue # Should not happen for labels 1 to num_labels-1
+
+                          # Convert component mask to polygon
+                          segmentation = mask_to_polygon(component_mask)
+
+                          if not segmentation:
+                               # print(f"Warning: No valid polygon found for stuff component {i} (semantic ID {target_semantic_id}) in {mask_filename}. Skipping annotation.")
+                               continue
+
+                          # Calculate area and bbox
+                          area = float(np.sum(component_mask)) # Area is pixel count
+                          # Bbox: [x, y, width, height]
+                          y_coords, x_coords = np.where(component_mask > 0)
+                          if y_coords.size > 0:
+                              x_min, x_max = np.min(x_coords), np.max(x_coords)
+                              y_min, y_max = np.min(y_coords), np.max(y_coords)
+                              bbox = [float(x_min), float(y_min), float(x_max - x_min + 1), float(y_max - y_min + 1)]
+                          else:
+                              bbox = [0.0, 0.0, 0.0, 0.0] # Should not happen
+
+                          # Add annotation
+                          annotation_id_counter += 1
+                          coco_output["annotations"].append({
+                              "id": annotation_id_counter,
+                              "image_id": current_image_id,
+                              "category_id": target_semantic_id,
+                              "segmentation": segmentation,
+                              "area": area,
+                              "bbox": bbox,
+                              "iscrowd": 1 # Stuff is crowd
+                          })
+
+
+            except Exception as e:
+                print(f"Error processing mask file {mask_filename} for COCO conversion: {e}. Skipping.")
+                import traceback
+                traceback.print_exc() # Print detailed error for debugging
+
+
+        # Save the COCO JSON file
+        try:
+            with open(output_json_path, 'w') as f:
+                json.dump(coco_output, f, indent=4)
+            print(f"\nSuccessfully saved COCO JSON to {output_json_path}")
+            print(f"Total images: {len(coco_output['images'])}")
+            print(f"Total annotations: {len(coco_output['annotations'])}")
+            print(f"Total categories: {len(coco_output['categories'])}")
+
+        except IOError as e:
+            print(f"Error saving COCO JSON file {output_json_path}: {e}")
+
 
 # --- Main Execution ---
-
-# ... (之前的导入和类定义代码保持不变) ...
 
 import sys # 导入 sys 模块来检查命令行参数
 
@@ -614,7 +897,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         print("Running with command-line arguments.")
         # 如果有参数，使用 argparse 解析
-        parser = argparse.ArgumentParser(description="Convert instance/semantic segmentation annotations to a 3-channel mask format.")
+        parser = argparse.ArgumentParser(description="Convert instance/semantic segmentation annotations to a 3-channel mask format and optionally to COCO JSON.")
         parser.add_argument("--input_format", required=True, choices=['coco', 'separate_masks'],
                             help="Input annotation format ('coco' or 'separate_masks'). Add more choices as you implement parsers.")
         parser.add_argument("--input_dir", required=True,
@@ -637,6 +920,12 @@ if __name__ == "__main__":
                             help="Only count instances in existing masks in output_dir, do not perform conversion.")
         parser.add_argument("--count_dir", default=None,
                             help="Directory containing masks for counting (defaults to output_dir if count_only is used).")
+        # --- New Argument for COCO JSON Output ---
+        parser.add_argument("--output_coco_json", type=str, default=None,
+                            help="Path to save the output COCO JSON annotation file. If provided, converts masks to COCO JSON.")
+        parser.add_argument("--coco_mask_dir", type=str, default=None,
+                            help="Directory containing the 3-channel masks to convert to COCO JSON (defaults to output_dir).")
+
 
         args = parser.parse_args()
     else:
@@ -651,13 +940,13 @@ if __name__ == "__main__":
         # !!! IMPORTANT: 请根据你的实际情况修改下面的路径和设置 !!!
         args.input_format = 'separate_masks' # 选择你要测试的格式: 'coco' 或 'separate_masks'
         args.input_dir = '/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/NYUv2/test' # 替换为你的测试数据集根目录
-        args.output_dir = '/dataset/local/NYUv2/test/processed_masks_48'  # 替换为你希望保存转换结果的目录
+        args.output_dir = '/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/NYUv2/test/processed_masks_48_tmp'  # 替换为你希望保存转换结果的目录
         args.category_mapping = '/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/NYUv2/test/label2id_48.json' # 类别映射文件路径 (可以是相对或绝对路径)
         args.image_subdir = "images" # 图像文件所在的子目录
 
         # 针对不同格式的特定参数
         # 如果 input_format 是 'coco'
-        # args.coco_annotation_file = "annotations/instances_train2017.json" # COCO 标注文件相对于 input_dir 的路径
+        # args.coco_annotation_file = "/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/NYUv2/coco_annotations_48.json" # COCO 标注文件相对于 input_dir 的路径
 
         # 如果 input_format 是 'separate_masks'
         args.instance_mask_subdir = "instance_masks" # 实例 mask 文件所在的子目录
@@ -665,13 +954,22 @@ if __name__ == "__main__":
         args.mask_ext = ".png" # mask 文件的扩展名
 
         # 控制行为
-        args.count_only = False  # 设置为 True 只计数，不转换
+        args.count_only = True  # 设置为 True 只计数，不转换
         args.count_dir = None  # 如果 count_only 为 True，可以指定计数目录，否则默认为 output_dir
+
+        # --- 新增的 COCO JSON 输出参数 ---
+        args.output_coco_json = '/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/NYUv2/COCO/pred.json' # 设置为 None 则不生成 COCO JSON
+        args.coco_mask_dir = '/Users/theobald/Documents/code_lib/python_lib/shrimpDetection/dataset/local/NYUv2/COCO/pred'  # 如果设置为 None，则使用 args.output_dir 作为 mask 来源
 
         # --- 默认参数设置结束 ---
 
         # 确保输出目录存在，即使使用硬编码路径
         os.makedirs(args.output_dir, exist_ok=True)
+        # 确保 COCO JSON 输出目录存在
+        if args.output_coco_json:
+             output_json_dir = os.path.dirname(args.output_coco_json)
+             if output_json_dir: # Check if path includes a directory
+                 os.makedirs(output_json_dir, exist_ok=True)
 
 
     # 创建一个示例类别映射文件，如果它不存在的话
@@ -711,9 +1009,15 @@ if __name__ == "__main__":
 
         if args.count_only:
             # 只执行计数功能
-            count_dir_to_use = args.count_dir if args.count_dir is not None else args.output_dir
-            instance_counts = converter.count_instances_in_masks(mask_dir=count_dir_to_use)
-            print("Instance counts:", instance_counts) # Optional: print the returned dict
+            # count_dir_to_use = args.count_dir if args.count_dir is not None else args.output_dir
+            # instance_counts = converter.count_instances_in_masks(mask_dir=count_dir_to_use)
+            # print("Instance counts:", instance_counts) # Optional: print the returned dict
+
+            # 如果同时请求了 COCO JSON 输出，则在计数后执行
+            if args.output_coco_json:
+                 coco_mask_dir_to_use = args.coco_mask_dir if args.coco_mask_dir is not None else args.output_dir
+                 converter.convert_to_coco_json(args.output_coco_json, mask_dir=coco_mask_dir_to_use)
+
         else:
             # 执行转换功能
             # 根据 input_format 将特定参数传递给相应的解析方法
@@ -730,9 +1034,16 @@ if __name__ == "__main__":
             # 执行转换
             converter.convert()
 
+            # 转换完成后，执行计数和/或 COCO JSON 输出
             count_dir_to_use = args.count_dir if args.count_dir is not None else args.output_dir
             instance_counts = converter.count_instances_in_masks(mask_dir=count_dir_to_use)
             print("Instance counts:", instance_counts)  # Optional: print the returned dict
+
+            if args.output_coco_json:
+                 # 如果指定了 coco_mask_dir，则从该目录读取 mask；否则从 output_dir 读取
+                 coco_mask_dir_to_use = args.coco_mask_dir if args.coco_mask_dir is not None else args.output_dir
+                 converter.convert_to_coco_json(args.output_coco_json, mask_dir=coco_mask_dir_to_use)
+
 
     except FileNotFoundError as e:
         print(f"Error: {e}")
@@ -743,6 +1054,4 @@ if __name__ == "__main__":
         print(f"An unexpected error occurred: {e}")
         import traceback
         traceback.print_exc()
-
-
 
